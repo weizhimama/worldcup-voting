@@ -1,0 +1,15 @@
+node_modules/
+backend/node_modules/
+
+.env
+.env.local
+.env.*.local
+
+backend/worldcup.db
+backend/worldcup.db-shm
+backend/worldcup.db-wal
+
+.DS_Store
+backend/.DS_Store
+
+.vercel/

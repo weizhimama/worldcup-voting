@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API测试 - 2026世界杯投票漂流瓶</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #fff;
+        }
+        h1 { color: #ffd700; }
+        .test-section {
+            background: rgba(255,255,255,0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { opacity: 0.9; }
+        pre {
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .success { color: #4ade80; }
+        .error { color: #f87171; }
+    </style>
+</head>
+<body>
+    <h1>🧪 API测试页面</h1>
+    
+    <div class="test-section">
+        <h2>1. 全局统计</h2>
+        <button onclick="testStats()">测试</button>
+        <pre id="stats-result">点击测试按钮...</pre>
+    </div>
+    
+    <div class="test-section">
+        <h2>2. 比赛列表</h2>
+        <button onclick="testMatches()">测试</button>
+        <pre id="matches-result">点击测试按钮...</pre>
+    </div>
+    
+    <div class="test-section">
+        <h2>3. 投票测试</h2>
+        <select id="vote-match">
+            <option value="1">比赛1</option>
+            <option value="2">比赛2</option>
+            <option value="3">比赛3</option>
+        </select>
+        <select id="vote-choice">
+            <option value="home">主队胜</option>
+            <option value="draw">平局</option>
+            <option value="away">客队胜</option>
+        </select>
+        <button onclick="testVote()">投票</button>
+        <pre id="vote-result">点击测试按钮...</pre>
+    </div>
+    
+    <div class="test-section">
+        <h2>4. 投瓶测试</h2>
+        <select id="bottle-type">
+            <option value="support">支持宣言</option>
+            <option value="predict">比分预测</option>
+            <option value="chat">闲聊祝福</option>
+            <option value="meet">遇见有缘</option>
+        </select>
+        <br><br>
+        <textarea id="bottle-content" placeholder="输入瓶子内容（10-200字）" style="width:100%;height:80px;padding:10px;border-radius:8px;border:1px solid #444;background:rgba(255,255,255,0.1);color:#fff;">测试瓶子内容，这是一条测试消息！</textarea>
+        <br><br>
+        <button onclick="testThrowBottle()">投瓶</button>
+        <pre id="throw-result">点击测试按钮...</pre>
+    </div>
+    
+    <div class="test-section">
+        <h2>5. 收瓶测试</h2>
+        <button onclick="testPickBottle()">收瓶</button>
+        <pre id="pick-result">点击测试按钮...</pre>
+    </div>
+    
+    <div class="test-section">
+        <h2>6. 用户统计</h2>
+        <button onclick="testUserStats()">测试</button>
+        <pre id="user-result">点击测试按钮...</pre>
+    </div>
+
+    <script>
+        const API_BASE = '/api';
+        let userId = localStorage.getItem('testUserId') || 'test-' + Date.now();
+        localStorage.setItem('testUserId', userId);
+        
+        async function api(endpoint, options = {}) {
+            try {
+                const res = await fetch(API_BASE + endpoint, {
+                    ...options,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-User-Id': userId,
+                        ...options.headers
+                    }
+                });
+                return await res.json();
+            } catch (e) {
+                return { success: false, error: e.message };
+            }
+        }
+        
+        async function testStats() {
+            const el = document.getElementById('stats-result');
+            el.textContent = '请求中...';
+            const result = await api('/stats/global');
+            el.innerHTML = `<span class="${result.success ? 'success' : 'error'}">${JSON.stringify(result, null, 2)}</span>`;
+        }
+        
+        async function testMatches() {
+            const el = document.getElementById('matches-result');
+            el.textContent = '请求中...';
+            const result = await api('/matches');
+            if (result.success) {
+                el.innerHTML = `<span class="success">获取到 ${result.data.length} 场比赛</span>\n\n`;
+                el.innerHTML += result.data.slice(0, 5).map(m => 
+                    `${m.home_flag} ${m.home_team} vs ${m.away_team} ${m.away_flag} (${m.group_name})`
+                ).join('\n');
+            } else {
+                el.innerHTML = `<span class="error">${JSON.stringify(result, null, 2)}</span>`;
+            }
+        }
+        
+        async function testVote() {
+            const el = document.getElementById('vote-result');
+            el.textContent = '请求中...';
+            const matchId = document.getElementById('vote-match').value;
+            const choice = document.getElementById('vote-choice').value;
+            const result = await api('/votes', {
+                method: 'POST',
+                body: JSON.stringify({ matchId: parseInt(matchId), choice })
+            });
+            el.innerHTML = `<span class="${result.success ? 'success' : 'error'}">${JSON.stringify(result, null, 2)}</span>`;
+        }
+        
+        async function testThrowBottle() {
+            const el = document.getElementById('throw-result');
+            el.textContent = '请求中...';
+            const type = document.getElementById('bottle-type').value;
+            const content = document.getElementById('bottle-content').value;
+            const result = await api('/bottles', {
+                method: 'POST',
+                body: JSON.stringify({ type, content })
+            });
+            el.innerHTML = `<span class="${result.success ? 'success' : 'error'}">${JSON.stringify(result, null, 2)}</span>`;
+        }
+        
+        async function testPickBottle() {
+            const el = document.getElementById('pick-result');
+            el.textContent = '请求中...';
+            const result = await api('/bottles/pick', { method: 'POST' });
+            el.innerHTML = `<span class="${result.success ? 'success' : 'error'}">${JSON.stringify(result, null, 2)}</span>`;
+        }
+        
+        async function testUserStats() {
+            const el = document.getElementById('user-result');
+            el.textContent = '请求中...';
+            const result = await api('/user/stats');
+            el.innerHTML = `<span class="${result.success ? 'success' : 'error'}">${JSON.stringify(result, null, 2)}</span>`;
+        }
+        
+        // 页面加载时测试连接
+        testStats();
+    </script>
+</body>
+</html>

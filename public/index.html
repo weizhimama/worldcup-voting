@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#1a1a2e">
+    <title>2026世界杯投票漂流瓶</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- ===== 用户注册/登录弹窗 ===== -->
+    <div id="auth-overlay" class="auth-overlay hidden">
+        <div class="auth-box">
+            <button class="auth-overlay-close" id="auth-overlay-close" onclick="hideAuthOverlay()" style="display:none" title="关闭">×</button>
+            <div class="auth-logo">⚽</div>
+            <h2>2026 世界杯</h2>
+            <p class="auth-subtitle">投票预测 · 漂流瓶交流</p>
+
+            <div class="auth-tabs">
+                <div class="auth-tab active" id="tab-register" onclick="switchAuthTab('register')">首次设置</div>
+                <div class="auth-tab" id="tab-login" onclick="switchAuthTab('login')">已有账号</div>
+                <div class="auth-tab" id="tab-changepwd" onclick="switchAuthTab('changepwd')" style="display:none">修改密码</div>
+            </div>
+
+            <!-- 注册表单 -->
+            <div class="auth-form active" id="form-register">
+                <div class="preset-hint">
+                    <strong>🎁 已有预设账号可直接使用：</strong><br>
+                    ball_fan_1 / fan123456 &nbsp;|&nbsp; ball_fan_2 / fan234567 &nbsp;|&nbsp; ball_fan_3 / fan345678<br>
+                    点击「已有账号」标签登录，或自行注册新账号
+                </div>
+                <div class="auth-field">
+                    <label>用户名 <span style="color:#ff6b6b">*</span></label>
+                    <input type="text" id="reg-username" placeholder="2-20个字符" maxlength="20"
+                        oninput="checkUsername(this.value)">
+                    <div id="username-feedback" class="field-hint">用于识别你的身份，设置后可修改昵称</div>
+                </div>
+                <div class="auth-field">
+                    <label>显示昵称（可选）</label>
+                    <input type="text" id="reg-nickname" placeholder="不填则与用户名相同" maxlength="20">
+                </div>
+                <div class="auth-field">
+                    <label>密码 <span style="color:#ff6b6b">*</span></label>
+                    <input type="password" id="reg-password" placeholder="至少6位" maxlength="30">
+                </div>
+                <div class="auth-field">
+                    <label>确认密码 <span style="color:#ff6b6b">*</span></label>
+                    <input type="password" id="reg-password2" placeholder="再次输入密码" maxlength="30">
+                </div>
+                <button class="auth-submit" id="btn-register" onclick="doRegister()">开始参与</button>
+                <p class="auth-notice">设置后即可投票、发漂流瓶，用户名全局唯一</p>
+            </div>
+
+            <!-- 登录表单 -->
+            <div class="auth-form" id="form-login">
+                <div class="auth-field">
+                    <label>用户名 <span style="color:#ff6b6b">*</span></label>
+                    <input type="text" id="login-username" placeholder="输入你的用户名" maxlength="20">
+                </div>
+                <div class="auth-field">
+                    <label>密码 <span style="color:#ff6b6b">*</span></label>
+                    <input type="password" id="login-password" placeholder="输入密码" maxlength="30">
+                </div>
+                <button class="auth-submit" id="btn-login" onclick="doLogin()">登录</button>
+                <p class="auth-notice">登录后历史数据将自动迁移到本设备</p>
+            </div>
+
+            <!-- 修改密码表单 -->
+            <div class="auth-form" id="form-changepwd">
+                <div class="auth-field">
+                    <label>当前密码 <span style="color:#ff6b6b">*</span></label>
+                    <input type="password" id="old-password" placeholder="输入当前密码" maxlength="30">
+                </div>
+                <div class="auth-field">
+                    <label>新密码 <span style="color:#ff6b6b">*</span></label>
+                    <input type="password" id="new-password" placeholder="至少6位" maxlength="30">
+                </div>
+                <div class="auth-field">
+                    <label>确认新密码 <span style="color:#ff6b6b">*</span></label>
+                    <input type="password" id="new-password2" placeholder="再次输入新密码" maxlength="30">
+                </div>
+                <button class="auth-submit" id="btn-changepwd" onclick="doChangePassword()">确认修改</button>
+                <button class="auth-cancel" onclick="hideAuthOverlay()">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="app">
+        <!-- PC端左侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">🏆</div>
+                <h1>2026世界杯</h1>
+                <p class="subtitle">投票预测 · 漂流瓶交流</p>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-page="home">
+                    <span class="nav-icon">🏠</span>
+                    <span class="nav-text">首页</span>
+                </button>
+                <button class="nav-item" data-page="bottle">
+                    <span class="nav-icon">🍶</span>
+                    <span class="nav-text">漂流瓶</span>
+                </button>
+                <button class="nav-item" data-page="profile">
+                    <span class="nav-icon">👤</span>
+                    <span class="nav-text">我的</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-stats">
+                <div class="stat-item">
+                    <span class="stat-value" id="sidebar-matches">-</span>
+                    <span class="stat-label">本周总场次</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="sidebar-votes">0</span>
+                    <span class="stat-label">我的投票</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="sidebar-bottles">0</span>
+                    <span class="stat-label">我的漂流瓶</span>
+                </div>
+            </div>
+
+            <!-- 用户信息 + 账号操作 -->
+            <div class="sidebar-user" id="sidebar-user" style="display:none">
+                <div class="sidebar-user-info">
+                    <span id="sidebar-avatar">⚽</span>
+                    <span id="sidebar-nickname">-</span>
+                </div>
+                <div class="sidebar-user-actions">
+                    <button class="user-action-btn" onclick="showChangePassword()">🔑 改密码</button>
+                    <button class="user-action-btn" onclick="showSwitchAccount()">🔄 切换账号</button>
+                    <button class="user-action-btn danger" onclick="doLogout()">🚪 退出登录</button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 首页 -->
+            <div id="home-page" class="page active">
+                <header class="page-header">
+                    <h2>📅 赛事列表</h2>
+                    <span class="date-display" id="today-date"></span>
+                </header>
+
+                <div class="match-grid" id="match-list">
+                </div>
+            </div>
+
+            <!-- 比赛详情页 -->
+            <div id="match-detail-page" class="page">
+                <div class="detail-header">
+                    <button class="back-btn" onclick="showPage('home')">← 返回</button>
+                    <span class="match-group" id="detail-group"></span>
+                </div>
+
+                <div class="match-detail-container">
+                    <div class="match-card-detail">
+                        <div class="match-time" id="detail-time"></div>
+                        <div class="teams-display">
+                            <div class="team" id="team-home">
+                                <div class="team-flag">🇧🇷</div>
+                                <div class="team-name">巴西</div>
+                                <div class="team-rank">世界排名 #1</div>
+                            </div>
+                            <div class="vs-center">
+                                <div class="vs-text">VS</div>
+                                <div class="match-result-badge" id="match-result-badge" style="display:none"></div>
+                            </div>
+                            <div class="team" id="team-away">
+                                <div class="team-flag">🇲🇦</div>
+                                <div class="team-name">摩洛哥</div>
+                                <div class="team-rank">世界排名 #12</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="detail-columns">
+                        <!-- 投票区 -->
+                        <div class="voting-section" id="voting-section">
+                            <h3>📊 投票预测</h3>
+                            <div class="vote-buttons">
+                                <button class="vote-btn vote-home" onclick="vote('home')">
+                                    <span class="team-flag-small">🇧🇷</span>
+                                    <span>投巴西</span>
+                                </button>
+                                <button class="vote-btn vote-draw" onclick="vote('draw')">
+                                    <span>⚖️ 平局</span>
+                                </button>
+                                <button class="vote-btn vote-away" onclick="vote('away')">
+                                    <span class="team-flag-small">🇲🇦</span>
+                                    <span>投摩洛哥</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 已投票/结果区 -->
+                        <div class="vote-result-section" id="vote-result-section" style="display: none;">
+                            <div class="vote-result-header">
+                                <h3>📊 投票统计</h3>
+                                <button class="revote-btn" id="revote-btn" onclick="revokeVote()" style="display:none">↩ 重新投票</button>
+                            </div>
+                            <div class="vote-stats">
+                                <div class="vote-bar-container">
+                                    <div class="vote-bar-label">
+                                        <span id="home-label">🇧🇷 巴西</span>
+                                        <span id="home-percent">0%</span>
+                                    </div>
+                                    <div class="vote-bar">
+                                        <div class="vote-bar-fill home" id="home-bar" style="width: 0%"></div>
+                                    </div>
+                                    <div class="vote-count" id="home-count">0 票</div>
+                                </div>
+                                <div class="vote-bar-container">
+                                    <div class="vote-bar-label">
+                                        <span>⚖️ 平局</span>
+                                        <span id="draw-percent">0%</span>
+                                    </div>
+                                    <div class="vote-bar">
+                                        <div class="vote-bar-fill draw" id="draw-bar" style="width: 0%"></div>
+                                    </div>
+                                    <div class="vote-count" id="draw-count">0 票</div>
+                                </div>
+                                <div class="vote-bar-container">
+                                    <div class="vote-bar-label">
+                                        <span id="away-label">🇲🇦 摩洛哥</span>
+                                        <span id="away-percent">0%</span>
+                                    </div>
+                                    <div class="vote-bar">
+                                        <div class="vote-bar-fill away" id="away-bar" style="width: 0%"></div>
+                                    </div>
+                                    <div class="vote-count" id="away-count">0 票</div>
+                                </div>
+                            </div>
+                            <div class="my-vote" id="my-vote"></div>
+                            <!-- 猜测结果展示（已结束） -->
+                            <div class="predict-result" id="predict-result" style="display:none"></div>
+                        </div>
+
+                        <div class="bottle-section">
+                            <h3>🍶 相关漂流瓶</h3>
+                            <div class="bottle-list" id="match-bottles">
+                                <p class="empty-tip">暂无漂流瓶，来投一个吧！</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 漂流瓶页面 -->
+            <div id="bottle-page" class="page">
+                <header class="page-header">
+                    <h2>🌊 漂流瓶海洋</h2>
+                </header>
+
+                <div class="bottle-page-container">
+                    <div class="ocean-animation">
+                        <div class="wave"></div>
+                        <div class="wave wave2"></div>
+                        <div class="ocean-count-badge" id="ocean-total-badge">🍶 海洋中有 <strong id="ocean-bottle-count">-</strong> 个漂流瓶</div>
+                        <div class="bottles-floating" id="bottles-floating">
+                            <div class="floating-bottle">🍶</div>
+                            <div class="floating-bottle">🍶</div>
+                            <div class="floating-bottle">🍶</div>
+                        </div>
+                    </div>
+
+                    <div class="bottle-actions">
+                        <button class="action-btn throw-btn" onclick="showThrowModal()">
+                            <span class="btn-icon">🍶</span>
+                            <span class="btn-text">投瓶</span>
+                            <span class="btn-desc">分享你的想法</span>
+                        </button>
+                        <button class="action-btn pick-btn" onclick="pickBottle()">
+                            <span class="btn-icon">🎣</span>
+                            <span class="btn-text">收瓶</span>
+                            <span class="btn-desc">今日剩余 <span id="pick-count">5</span> 次</span>
+                        </button>
+                    </div>
+
+                    <div class="my-bottles-section">
+                        <h3>📦 我的瓶子</h3>
+                        <div class="tab-buttons">
+                            <button class="tab-btn active" id="tab-thrown" onclick="switchBottleTab('thrown', this)">投出的</button>
+                            <button class="tab-btn" id="tab-collected" onclick="switchBottleTab('collected', this)">收到的</button>
+                        </div>
+                        <div class="bottle-list" id="my-bottle-list">
+                            <p class="empty-tip">还没有投出过瓶子</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 个人中心页面 -->
+            <div id="profile-page" class="page">
+                <header class="page-header">
+                    <h2>👤 个人中心</h2>
+                </header>
+
+                <div class="profile-container">
+                    <div class="profile-card">
+                        <div class="avatar" id="profile-avatar">⚽</div>
+                        <div class="username" id="profile-nickname">足球爱好者</div>
+                        <div class="user-level" id="profile-level">Lv.1 新手球迷</div>
+                        <div style="margin-top:6px;font-size:12px;color:rgba(255,255,255,0.4)" id="profile-username-tag"></div>
+                        <!-- 账号操作按钮组（移动端） -->
+                        <div class="profile-account-actions">
+                            <button class="profile-action-btn" onclick="showChangePassword()">🔑 修改密码</button>
+                            <button class="profile-action-btn" onclick="showSwitchAccount()">🔄 切换账号</button>
+                            <button class="profile-action-btn danger" onclick="doLogout()">🚪 退出登录</button>
+                        </div>
+                    </div>
+
+                    <div class="stats-grid">
+                        <div class="stats-card">
+                            <div class="stats-icon">📊</div>
+                            <div class="stats-content">
+                                <div class="stats-number" id="my-votes">0</div>
+                                <div class="stats-label">参与投票</div>
+                            </div>
+                        </div>
+                        <div class="stats-card">
+                            <div class="stats-icon">🎯</div>
+                            <div class="stats-content">
+                                <div class="stats-number" id="my-correct">0</div>
+                                <div class="stats-label">预测正确</div>
+                            </div>
+                        </div>
+                        <div class="stats-card">
+                            <div class="stats-icon">📈</div>
+                            <div class="stats-content">
+                                <div class="stats-number" id="my-accuracy">0%</div>
+                                <div class="stats-label">准确率</div>
+                            </div>
+                        </div>
+                        <div class="stats-card">
+                            <div class="stats-icon">🍶</div>
+                            <div class="stats-content">
+                                <div class="stats-number" id="my-bottles-count">0</div>
+                                <div class="stats-label">我的漂流瓶</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="achievements-section">
+                        <h3>🏆 成就徽章</h3>
+                        <div class="achievements-grid" id="achievements-grid">
+                            <div class="achievement locked">
+                                <span class="achievement-icon">🔮</span>
+                                <span class="achievement-name">预言新手</span>
+                                <span class="achievement-desc">完成10次预测</span>
+                            </div>
+                            <div class="achievement locked">
+                                <span class="achievement-icon">👁️</span>
+                                <span class="achievement-name">神预言</span>
+                                <span class="achievement-desc">连续5场正确</span>
+                            </div>
+                            <div class="achievement locked">
+                                <span class="achievement-icon">🍶</span>
+                                <span class="achievement-name">漂流达人</span>
+                                <span class="achievement-desc">投出100个瓶子</span>
+                            </div>
+                            <div class="achievement locked">
+                                <span class="achievement-icon">🤝</span>
+                                <span class="achievement-name">有缘人</span>
+                                <span class="achievement-desc">收到10个回复</span>
+                            </div>
+                            <div class="achievement locked">
+                                <span class="achievement-icon">🏅</span>
+                                <span class="achievement-name">全勤奖</span>
+                                <span class="achievement-desc">参与全部场次</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- 移动端底部导航 -->
+        <nav class="bottom-nav">
+            <button class="nav-item active" data-page="home">
+                <span class="nav-icon">🏠</span>
+                <span class="nav-text">首页</span>
+            </button>
+            <button class="nav-item" data-page="bottle">
+                <span class="nav-icon">🍶</span>
+                <span class="nav-text">漂流瓶</span>
+            </button>
+            <button class="nav-item" data-page="profile">
+                <span class="nav-icon">👤</span>
+                <span class="nav-text">我的</span>
+            </button>
+        </nav>
+
+        <!-- 投瓶弹窗 -->
+        <div id="throw-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>🍶 投放漂流瓶</h3>
+                    <button class="close-btn" onclick="closeModal('throw-modal')">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="bottle-types">
+                        <button class="bottle-type active" data-type="support" onclick="selectBottleType(this)">
+                            <span class="type-icon">🏳️</span>
+                            <span class="type-name">支持宣言</span>
+                        </button>
+                        <button class="bottle-type" data-type="predict" onclick="selectBottleType(this)">
+                            <span class="type-icon">🎯</span>
+                            <span class="type-name">比分预测</span>
+                        </button>
+                        <button class="bottle-type" data-type="chat" onclick="selectBottleType(this)">
+                            <span class="type-icon">💬</span>
+                            <span class="type-name">闲聊祝福</span>
+                        </button>
+                        <button class="bottle-type" data-type="meet" onclick="selectBottleType(this)">
+                            <span class="type-icon">🍀</span>
+                            <span class="type-name">遇见有缘</span>
+                        </button>
+                    </div>
+                    <textarea id="bottle-content" placeholder="写下你想说的话（10-200字）..." maxlength="200"></textarea>
+                    <div class="char-count"><span id="char-count">0</span>/200</div>
+                    <div class="match-select">
+                        <label>关联比赛（可选）：</label>
+                        <select id="bottle-match">
+                            <option value="">不关联</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="submit-btn" onclick="throwBottle()">投放瓶子</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 收瓶弹窗 -->
+        <div id="pick-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>🎣 收到漂流瓶</h3>
+                    <button class="close-btn" onclick="closeModal('pick-modal')">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="picked-bottle" id="picked-bottle">
+                        <div class="bottle-animation">🍶</div>
+                        <div class="bottle-content-display">
+                            <div class="bottle-type-badge" id="picked-type"></div>
+                            <p id="picked-content"></p>
+                            <div class="bottle-meta">
+                                <span id="picked-time"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 回复区 -->
+                    <div class="reply-input-area" id="reply-input-area">
+                        <textarea id="reply-content" placeholder="写下你的回复..." maxlength="200" rows="3"></textarea>
+                        <button class="submit-btn" style="width:100%;margin-top:8px" onclick="submitReply()">发送回复</button>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="secondary-btn" onclick="closeModal('pick-modal')">收下</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 漂流瓶回复展开弹窗 -->
+        <div id="bottle-replies-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>🍶 漂流瓶 & 回复</h3>
+                    <button class="close-btn" onclick="closeModal('bottle-replies-modal')">×</button>
+                </div>
+                <div class="modal-body" id="bottle-replies-body"></div>
+                <div class="modal-footer">
+                    <div style="width:100%">
+                        <textarea id="new-reply-content" placeholder="写下你的回复..." maxlength="200" rows="2"></textarea>
+                        <button class="submit-btn" style="width:100%;margin-top:8px" onclick="submitNewReply()">发送回复</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
