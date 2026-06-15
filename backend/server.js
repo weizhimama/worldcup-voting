@@ -107,6 +107,19 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      ok: true,
+      hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
+      hasSupabaseUrl: Boolean(process.env.SUPABASE_URL),
+      hasSupabaseServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+      storageBucket: process.env.SUPABASE_STORAGE_BUCKET || 'flags'
+    }
+  });
+});
+
 // 用户ID中间件
 app.use(async (req, res, next) => {
   try {
@@ -1181,6 +1194,14 @@ app.delete('/api/admin/admins/:id', adminAuth, async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+app.use((error, req, res, next) => {
+  console.error('请求处理失败:', error);
+  res.status(500).json({
+    success: false,
+    error: error.message || 'Internal Server Error'
+  });
 });
 
 // ==================== 启动服务器 ====================
