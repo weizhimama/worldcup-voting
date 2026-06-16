@@ -10,6 +10,7 @@ const { hasSupabaseStorage, uploadFlag } = require('./storage');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const APP_TIME_ZONE = 'Asia/Shanghai';
+const hasPostgres = Boolean(process.env.DATABASE_URL);
 
 // ==================== 工具函数 ====================
 
@@ -38,6 +39,19 @@ function getAppDate(date = new Date()) {
   return formatInAppTimeZone(date).slice(0, 10);
 }
 
+function getAppDayRange(date = new Date()) {
+  const appDate = getAppDate(date);
+  const [year, month, day] = appDate.split('-').map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day));
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+
+  return {
+    start: `${fmt(start)} 00:00:00`,
+    end: `${fmt(end)} 00:00:00`
+  };
+}
+
 function getAppWeekRange(date = new Date()) {
   const appDate = getAppDate(date);
   const [year, month, day] = appDate.split('-').map(Number);
@@ -51,6 +65,32 @@ function getAppWeekRange(date = new Date()) {
   return {
     start: `${fmt(monday)} 00:00:00`,
     end: `${fmt(nextMonday)} 00:00:00`
+  };
+}
+
+function normalizeMatchDateTime(value) {
+  if (!value) return value;
+  const text = String(value).trim();
+  if (!hasPostgres) return text;
+
+  const normalized = text.replace(' ', 'T');
+  if (/[zZ]$|[+-]\d{2}(?::?\d{2})?$/.test(normalized)) {
+    return normalized.replace(/([+-]\d{2})$/, '$1:00');
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
+    return `${normalized}:00+08:00`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(normalized)) {
+    return `${normalized}+08:00`;
+  }
+  return text;
+}
+
+function normalizeMatchRange(range) {
+  return {
+    start: normalizeMatchDateTime(range.start),
+    end: normalizeMatchDateTime(range.end)
   };
 }
 
@@ -127,6 +167,23 @@ async function getSingleValue(sql, params = [], key = 'c') {
 // ==================== 赛事状态自动更新 ====================
 // 根据 match_time / end_time 与当前时间对比自动更新 status
 async function autoUpdateMatchStatus() {
+  if (hasPostgres) {
+    await db.prepare(`
+      UPDATE matches SET status = 'ended'
+      WHERE end_time IS NOT NULL AND end_time <= CURRENT_TIMESTAMP
+    `).run();
+    await db.prepare(`
+      UPDATE matches SET status = 'live'
+      WHERE match_time <= CURRENT_TIMESTAMP
+        AND (end_time IS NULL OR end_time > CURRENT_TIMESTAMP)
+    `).run();
+    await db.prepare(`
+      UPDATE matches SET status = 'upcoming'
+      WHERE match_time > CURRENT_TIMESTAMP
+    `).run();
+    return;
+  }
+
   const now = formatInAppTimeZone();
   await db.prepare(`
     UPDATE matches SET status = 'ended'
@@ -220,7 +277,7 @@ app.get('/api/matches', async (req, res) => {
 app.get('/api/matches/week-count', async (req, res) => {
   try {
     await autoUpdateMatchStatus();
-    const week = getAppWeekRange();
+    const week = normalizeMatchRange(getAppWeekRange());
     const count = await getSingleValue(`
       SELECT COUNT(*) as c FROM matches
       WHERE match_time >= ? AND match_time < ?
@@ -234,7 +291,7 @@ app.get('/api/matches/week-count', async (req, res) => {
 app.get('/api/matches/today', async (req, res) => {
   try {
     await autoUpdateMatchStatus();
-    const today = getAppDate();
+    const today = normalizeMatchRange(getAppDayRange());
     const matches = await db.prepare(`
       SELECT m.*,
         COALESCE(vs.home_votes, 0) as home_votes,
@@ -243,9 +300,9 @@ app.get('/api/matches/today', async (req, res) => {
         COALESCE(vs.total_votes, 0) as total_votes
       FROM matches m
       LEFT JOIN vote_stats vs ON m.id = vs.match_id
-      WHERE DATE(m.match_time) = DATE(?)
+      WHERE m.match_time >= ? AND m.match_time < ?
       ORDER BY m.match_time ASC
-    `).all(today);
+    `).all(today.start, today.end);
     res.json({ success: true, data: matches });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -670,7 +727,7 @@ app.get('/api/user/stats', async (req, res) => {
 app.get('/api/stats/global', async (req, res) => {
   try {
     await autoUpdateMatchStatus();
-    const week = getAppWeekRange();
+    const week = normalizeMatchRange(getAppWeekRange());
     const weekCount = await getSingleValue(`
       SELECT COUNT(*) as c FROM matches
       WHERE match_time >= ? AND match_time < ?
@@ -830,14 +887,16 @@ app.post('/api/admin/matches', adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, error: '缺少必填字段' });
     }
 
+    const normalizedMatchTime = normalizeMatchDateTime(match_time);
+    const normalizedEndTime = normalizeMatchDateTime(end_time) || null;
     const result = await db.prepare(`
       INSERT INTO matches (group_name, round, home_team, home_flag, home_rank, away_team, away_flag, away_rank, match_time, end_time, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming')
-    `).run(group_name, round, home_team, home_flag || '', home_rank || null, away_team, away_flag || '', away_rank || null, match_time, end_time || null);
+    `).run(group_name, round, home_team, home_flag || '', home_rank || null, away_team, away_flag || '', away_rank || null, normalizedMatchTime, normalizedEndTime);
 
    await db.prepare('INSERT OR IGNORE INTO vote_stats (match_id) VALUES (?)').run(result.lastInsertRowid);
 
-    await logAction(req.admin, '新增比赛', 'match', result.lastInsertRowid, { home_team, away_team, match_time });
+    await logAction(req.admin, '新增比赛', 'match', result.lastInsertRowid, { home_team, away_team, match_time: normalizedMatchTime });
 
     res.json({ success: true, data: { id: result.lastInsertRowid } });
   } catch (error) {
@@ -862,7 +921,18 @@ app.post('/api/admin/matches/batch', adminAuth, async (req, res) => {
         const result = await db.prepare(`
           INSERT INTO matches (group_name, round, home_team, home_flag, home_rank, away_team, away_flag, away_rank, match_time, end_time, status)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upcoming')
-        `).run(m.group_name, m.round, m.home_team, m.home_flag || '', m.home_rank || null, m.away_team, m.away_flag || '', m.away_rank || null, m.match_time, m.end_time || null);
+        `).run(
+          m.group_name,
+          m.round,
+          m.home_team,
+          m.home_flag || '',
+          m.home_rank || null,
+          m.away_team,
+          m.away_flag || '',
+          m.away_rank || null,
+          normalizeMatchDateTime(m.match_time),
+          normalizeMatchDateTime(m.end_time) || null
+        );
        await db.prepare('INSERT OR IGNORE INTO vote_stats (match_id) VALUES (?)').run(result.lastInsertRowid);
         ids.push(result.lastInsertRowid);
       }
@@ -886,6 +956,8 @@ app.put('/api/admin/matches/:id', adminAuth, async (req, res) => {
     const existing = await db.prepare('SELECT * FROM matches WHERE id = ?').get(id);
     if (!existing) return res.status(404).json({ success: false, error: '比赛不存在' });
 
+    const normalizedMatchTime = normalizeMatchDateTime(match_time);
+    const normalizedEndTime = normalizeMatchDateTime(end_time);
    await db.prepare(`
       UPDATE matches SET
         group_name  = COALESCE(?, group_name),
@@ -902,7 +974,7 @@ app.put('/api/admin/matches/:id', adminAuth, async (req, res) => {
         home_score  = COALESCE(?, home_score),
         away_score  = COALESCE(?, away_score)
       WHERE id = ?
-    `).run(group_name, round, home_team, home_flag, home_rank, away_team, away_flag, away_rank, match_time, end_time, status, home_score, away_score, id);
+    `).run(group_name, round, home_team, home_flag, home_rank, away_team, away_flag, away_rank, normalizedMatchTime, normalizedEndTime, status, home_score, away_score, id);
 
     if (status === 'ended' && home_score !== undefined && away_score !== undefined) {
       let correctChoice = home_score > away_score ? 'home' : home_score < away_score ? 'away' : 'draw';

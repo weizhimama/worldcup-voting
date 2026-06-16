@@ -129,6 +129,31 @@ function updateElement(id, value) {
     if (el) el.textContent = value;
 }
 
+function parseMatchDate(value) {
+    if (!value) return null;
+    if (value instanceof Date) return value;
+    const text = String(value).trim();
+    const normalizedZone = text.replace(/([+-]\d{2})$/, '$1:00');
+    const hasTimeZone = /[zZ]$|[+-]\d{2}(?::?\d{2})?$/.test(text);
+    return new Date(hasTimeZone ? normalizedZone.replace(' ', 'T') : text.replace(' ', 'T'));
+}
+
+function calcMatchStatus(matchTime, endTime) {
+    if (!matchTime) return 'upcoming';
+    const start = parseMatchDate(matchTime);
+    const end = parseMatchDate(endTime);
+    const now = new Date();
+
+    if (!start || Number.isNaN(start.getTime())) return 'upcoming';
+    if (end && !Number.isNaN(end.getTime()) && end <= now) return 'ended';
+    if (start <= now) return 'live';
+    return 'upcoming';
+}
+
+function getDisplayStatus(match) {
+    return calcMatchStatus(match.match_time, match.end_time);
+}
+
 // ==================== 账号管理 ====================
 
 function showAuthOverlay(tab) {
@@ -309,12 +334,13 @@ function renderMatches() {
     // 按状态分组：live > upcoming > ended
     const statusOrder = { live: 0, upcoming: 1, ended: 2 };
     const sorted = [...state.matches].sort((a, b) => {
-        const so = (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
+        const so = (statusOrder[getDisplayStatus(a)] ?? 3) - (statusOrder[getDisplayStatus(b)] ?? 3);
         if (so !== 0) return so;
         return new Date(a.match_time) - new Date(b.match_time);
     });
 
     container.innerHTML = sorted.map(match => {
+        const displayStatus = getDisplayStatus(match);
         const totalVotes = match.total_votes || 0;
         const homePercent = totalVotes > 0 ? ((match.home_votes / totalVotes) * 100).toFixed(1) : 0;
         const drawPercent = totalVotes > 0 ? ((match.draw_votes / totalVotes) * 100).toFixed(1) : 0;
@@ -328,14 +354,14 @@ function renderMatches() {
         const homeFlag = renderFlag(match.home_flag, 40, 28);
         const awayFlag = renderFlag(match.away_flag, 40, 28);
 
-        const scoreHtml = match.status === 'ended' && match.home_score !== null
+        const scoreHtml = displayStatus === 'ended' && match.home_score !== null
             ? `<div class="match-score">${match.home_score} - ${match.away_score}</div>`
             : '';
 
         // ---- 底部区域：根据状态+投票情况决定显示内容 ----
         let bottomHtml = '';
 
-        if (match.status === 'ended') {
+        if (displayStatus === 'ended') {
             // 已结束：始终显示投票进度条
             const voteBar = totalVotes > 0 ? `
                 <div class="vote-preview">
@@ -395,10 +421,10 @@ function renderMatches() {
         }
 
         return `
-            <div class="match-card ${match.status}" onclick="showMatchDetail(${match.id})">
+            <div class="match-card ${displayStatus}" onclick="showMatchDetail(${match.id})">
                 <div class="match-header">
                     <span class="match-time">📅 ${dateStr} ⏰ ${timeStr}</span>
-                    <span class="match-status ${match.status}">${statusText[match.status] || '即将开始'}</span>
+                    <span class="match-status ${displayStatus}">${statusText[displayStatus] || '即将开始'}</span>
                 </div>
                 <div class="match-group-tag">${match.group_name} · ${match.round}</div>
                 <div class="teams">
@@ -432,6 +458,7 @@ async function showMatchDetail(matchId) {
 
     const match = result.data;
     state.currentMatch = match;
+    const displayStatus = getDisplayStatus(match);
 
     updateElement('detail-group', `${match.group_name} · ${match.round}`);
     const matchTime = new Date(match.match_time);
@@ -453,10 +480,10 @@ async function showMatchDetail(matchId) {
     // 比分/状态徽章
     const badge = document.getElementById('match-result-badge');
     if (badge) {
-        if (match.status === 'ended' && match.home_score !== null) {
+        if (displayStatus === 'ended' && match.home_score !== null) {
             badge.textContent = `${match.home_score} - ${match.away_score}`;
             badge.style.display = 'block';
-        } else if (match.status === 'live') {
+        } else if (displayStatus === 'live') {
             badge.textContent = '⚡ 进行中';
             badge.style.display = 'block';
         } else {
@@ -477,7 +504,7 @@ async function showMatchDetail(matchId) {
     const voteResultSection = document.getElementById('vote-result-section');
     const revoteBtn = document.getElementById('revote-btn');
 
-    if (match.status === 'ended') {
+    if (displayStatus === 'ended') {
         // 已结束：只显示统计，不可操作
         if (votingSection) votingSection.style.display = 'none';
         if (voteResultSection) voteResultSection.style.display = 'block';
@@ -549,7 +576,7 @@ function updateVoteStats(match) {
 
 async function vote(choice) {
     if (!state.currentMatch) { showToast('请先选择比赛'); return; }
-    if (state.currentMatch.status === 'ended') { showToast('比赛已结束，无法投票'); return; }
+    if (getDisplayStatus(state.currentMatch) === 'ended') { showToast('比赛已结束，无法投票'); return; }
 
     const result = await apiRequest('/votes', {
         method: 'POST',
