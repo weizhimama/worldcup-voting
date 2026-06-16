@@ -1215,7 +1215,6 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`🚀 服务器运行在 http://localhost:${PORT}`);
     console.log(`🔧 管理后台: http://localhost:${PORT}/admin.html`);
-    console.log(`📊 管理员账号: admin / worldcup-admin-2026`);
     autoUpdateMatchStatus().catch(error => console.error('状态更新失败:', error.message));
   });
 }

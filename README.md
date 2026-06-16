@@ -101,12 +101,6 @@ PGSSLMODE=require
 /api/upload/flag
 ```
 
-管理员默认账号：
-
-```text
-admin / worldcup-admin-2026
-```
-
 ## API接口文档
 
 ### 比赛相关

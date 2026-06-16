@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS admin_logs (
 );
 
 INSERT INTO admins (username, password_hash, role)
-VALUES ('admin', '8b307cfdb1237ee30720361f5b245e1ba0f8732012db7c1bb3eaa30de622c221', 'superadmin')
+VALUES ('admin', 'a303ea67e5fce9601cace5fbc1ea0ae6d37d232302341862b077eea1a680a03b', 'superadmin')
 ON CONFLICT (username) DO NOTHING;
 
 INSERT INTO users (id, username, password_hash, nickname, avatar, is_setup, is_preset)

@@ -21,7 +21,7 @@ fi
 echo "🚀 启动服务器..."
 echo ""
 echo "用户端地址:   http://localhost:3000"
-echo "管理后台:     http://localhost:3000/admin.html  (默认密码: worldcup-admin-2026)"
+echo "管理后台:     http://localhost:3000/admin.html"
 echo "按 Ctrl+C 停止服务器"
 echo ""
 
