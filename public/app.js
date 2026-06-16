@@ -100,6 +100,12 @@ async function loadMatches() {
         state.matches = result.data;
         renderMatches();
         initBottleSelect();
+    } else {
+        const container = document.getElementById('match-list');
+        if (container) {
+            container.innerHTML = `<p class="empty-tip">比赛加载失败，请稍后刷新</p>`;
+        }
+        console.error('比赛加载失败:', result.error);
     }
 }
 
