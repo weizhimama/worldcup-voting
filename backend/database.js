@@ -1,5 +1,6 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const { worldCup2026Schedule } = require('./worldcup2026-schedule');
 
 const db = new Database(path.join(__dirname, 'worldcup.db'));
 
@@ -196,50 +197,28 @@ const initMatches = db.transaction(() => {
   const existing = db.prepare('SELECT COUNT(*) as c FROM matches').get().c;
   if (existing > 0) return;
 
-  const now = new Date();
-  const t = (offsetHours) => {
-    const d = new Date(now.getTime() + offsetHours * 3600 * 1000);
-    return d.toISOString().replace('T', ' ').substring(0, 19);
-  };
-  const te = (offsetHours) => t(offsetHours + 2);
-
-  const matches = [
-    // ===== 已结束 (6场) =====
-    ['A组', '第1轮', '墨西哥',   '🇲🇽', 15, '南非',       '🇿🇦', 58, t(-120), te(-120), 'ended',   2, 1],
-    ['A组', '第1轮', '美国',     '🇺🇸',  4,  '加拿大',     '🇨🇦', 45, t(-96),  te(-96),  'ended',   1, 1],
-    ['B组', '第1轮', '德国',     '🇩🇪', 16,  '日本',       '🇯🇵', 15, t(-72),  te(-72),  'ended',   1, 2],
-    ['B组', '第1轮', '葡萄牙',   '🇵🇹',  6,  '加纳',       '🇬🇭', 61, t(-48),  te(-48),  'ended',   3, 2],
-    ['C组', '第1轮', '阿根廷',   '🇦🇷',  1,  '沙特阿拉伯', '🇸🇦', 56, t(-36),  te(-36),  'ended',   1, 2],
-    ['C组', '第1轮', '法国',     '🇫🇷',  2,  '澳大利亚',   '🇦🇺', 27, t(-24),  te(-24),  'ended',   4, 1],
-    // ===== 进行中 (3场) =====
-    ['D组', '第1轮', '巴西',     '🇧🇷',  5,  '摩洛哥',     '🇲🇦', 14, t(-1.5), te(-1.5), 'live',    null, null],
-    ['D组', '第1轮', '荷兰',     '🇳🇱',  8,  '厄瓜多尔',   '🇪🇨', 43, t(-0.8), te(-0.8), 'live',    null, null],
-    ['E组', '第1轮', '西班牙',   '🇪🇸',  7,  '哥斯达黎加', '🇨🇷', 42, t(-0.3), te(-0.3), 'live',    null, null],
-    // ===== 即将开始 (本周, 8场) =====
-    ['E组', '第1轮', '英格兰',   '🏴󠁧󠁢󠁥󠁮󠁧󠁿',  4,  '伊朗',       '🇮🇷', 22, t(2),    te(2),    'upcoming',null, null],
-    ['F组', '第1轮', '比利时',   '🇧🇪',  3,  '加拿大',     '🇨🇦', 41, t(5),    te(5),    'upcoming',null, null],
-    ['F组', '第1轮', '克罗地亚', '🇭🇷',  9,  '摩洛哥',     '🇲🇦', 22, t(8),    te(8),    'upcoming',null, null],
-    ['G组', '第1轮', '巴西',     '🇧🇷',  5,  '塞尔维亚',   '🇷🇸', 21, t(12),   te(12),   'upcoming',null, null],
-    ['G组', '第1轮', '瑞士',     '🇨🇭', 13,  '喀麦隆',     '🇨🇲', 43, t(15),   te(15),   'upcoming',null, null],
-    ['H组', '第1轮', '葡萄牙',   '🇵🇹',  6,  '乌拉圭',     '🇺🇾', 14, t(20),   te(20),   'upcoming',null, null],
-    ['H组', '第1轮', '韩国',     '🇰🇷', 28,  '加纳',       '🇬🇭', 60, t(26),   te(26),   'upcoming',null, null],
-    // ===== 下周场次 (6场) =====
-    ['A组', '第2轮', '墨西哥',   '🇲🇽', 15,  '波兰',       '🇵🇱', 26, t(48),   te(48),   'upcoming',null, null],
-    ['A组', '第2轮', '法国',     '🇫🇷',  2,  '丹麦',       '🇩🇰', 10, t(52),   te(52),   'upcoming',null, null],
-    ['B组', '第2轮', '阿根廷',   '🇦🇷',  1,  '墨西哥',     '🇲🇽', 15, t(60),   te(60),   'upcoming',null, null],
-    ['B组', '第2轮', '波兰',     '🇵🇱', 26,  '沙特阿拉伯', '🇸🇦', 56, t(64),   te(64),   'upcoming',null, null],
-    ['C组', '第2轮', '英格兰',   '🏴󠁧󠁢󠁥󠁮󠁧󠁿',  4,  '美国',       '🇺🇸',  4, t(72),   te(72),   'upcoming',null, null],
-    ['C组', '淘汰赛', '意大利',  '🇮🇹', 11,  '克罗地亚',   '🇭🇷',  9, t(96),   te(96),   'upcoming',null, null],
-  ];
-
   const stmt = db.prepare(`
     INSERT OR IGNORE INTO matches
     (group_name, round, home_team, home_flag, home_rank, away_team, away_flag, away_rank, match_time, end_time, status, home_score, away_score)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  for (const match of matches) {
-    stmt.run(...match);
+  for (const match of worldCup2026Schedule) {
+    stmt.run(
+      match.groupName,
+      match.round,
+      match.homeTeam,
+      match.homeFlag,
+      null,
+      match.awayTeam,
+      match.awayFlag,
+      null,
+      match.matchTime,
+      match.endTime,
+      match.status,
+      null,
+      null
+    );
   }
 });
 

@@ -9,10 +9,50 @@ const { hasSupabaseStorage, uploadFlag } = require('./storage');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const APP_TIME_ZONE = 'Asia/Shanghai';
 
 // ==================== 工具函数 ====================
 
 const sha256 = (str) => crypto.createHash('sha256').update(str).digest('hex');
+
+function formatInAppTimeZone(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: APP_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    hourCycle: 'h23'
+  }).formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function getAppDate(date = new Date()) {
+  return formatInAppTimeZone(date).slice(0, 10);
+}
+
+function getAppWeekRange(date = new Date()) {
+  const appDate = getAppDate(date);
+  const [year, month, day] = appDate.split('-').map(Number);
+  const utcMidnight = Date.UTC(year, month - 1, day);
+  const dayOfWeek = new Date(utcMidnight).getUTCDay();
+  const daysSinceMonday = (dayOfWeek + 6) % 7;
+  const monday = new Date(utcMidnight - daysSinceMonday * 24 * 60 * 60 * 1000);
+  const nextMonday = new Date(monday.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+
+  return {
+    start: `${fmt(monday)} 00:00:00`,
+    end: `${fmt(nextMonday)} 00:00:00`
+  };
+}
 
 // ==================== 图片上传配置 ====================
 
@@ -87,7 +127,7 @@ async function getSingleValue(sql, params = [], key = 'c') {
 // ==================== 赛事状态自动更新 ====================
 // 根据 match_time / end_time 与当前时间对比自动更新 status
 async function autoUpdateMatchStatus() {
-  const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+  const now = formatInAppTimeZone();
   // upcoming -> live：比赛开始时间已过，但还没到结束时间
  await db.prepare(`
     UPDATE matches SET status = 'live'
@@ -178,11 +218,11 @@ app.get('/api/matches', async (req, res) => {
 app.get('/api/matches/week-count', async (req, res) => {
   try {
     await autoUpdateMatchStatus();
+    const week = getAppWeekRange();
     const count = await getSingleValue(`
       SELECT COUNT(*) as c FROM matches
-      WHERE match_time >= datetime('now', 'weekday 0', '-7 days')
-        AND match_time < datetime('now', 'weekday 0', '+1 day')
-    `);
+      WHERE match_time >= ? AND match_time < ?
+    `, [week.start, week.end]);
     res.json({ success: true, data: { count } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -192,7 +232,7 @@ app.get('/api/matches/week-count', async (req, res) => {
 app.get('/api/matches/today', async (req, res) => {
   try {
     await autoUpdateMatchStatus();
-    const today = new Date().toISOString().split('T')[0];
+    const today = getAppDate();
     const matches = await db.prepare(`
       SELECT m.*,
         COALESCE(vs.home_votes, 0) as home_votes,
@@ -331,7 +371,7 @@ app.post('/api/bottles', async (req, res) => {
 
 app.post('/api/bottles/pick', async (req, res) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getAppDate();
     const todayPicks = await db.prepare('SELECT COUNT(*) as count FROM user_picks WHERE user_id = ? AND pick_date = ?').get(req.userId, today);
     if (todayPicks.count >= 5) {
       return res.status(400).json({ success: false, error: '今日收瓶次数已用完' });
@@ -398,7 +438,7 @@ app.get('/api/bottles/match/:matchId', async (req, res) => {
 
 app.get('/api/bottles/picks/remaining', async (req, res) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getAppDate();
     const todayPicks = await db.prepare('SELECT COUNT(*) as count FROM user_picks WHERE user_id = ? AND pick_date = ?').get(req.userId, today);
     res.json({ success: true, data: { remaining: 5 - (todayPicks?.count || 0), used: todayPicks?.count || 0 } });
   } catch (error) {
@@ -628,12 +668,11 @@ app.get('/api/user/stats', async (req, res) => {
 app.get('/api/stats/global', async (req, res) => {
   try {
     await autoUpdateMatchStatus();
-    // 本周场次
+    const week = getAppWeekRange();
     const weekCount = await getSingleValue(`
       SELECT COUNT(*) as c FROM matches
-      WHERE match_time >= datetime('now', 'weekday 1', '-7 days')
-        AND match_time < datetime('now', 'weekday 1')
-    `) || await getSingleValue('SELECT COUNT(*) as c FROM matches');
+      WHERE match_time >= ? AND match_time < ?
+    `, [week.start, week.end]);
 
     const totalVotes = await db.prepare('SELECT SUM(total_votes) as total FROM vote_stats').get();
     const totalBottles = await db.prepare('SELECT COUNT(*) as count FROM bottles').get();

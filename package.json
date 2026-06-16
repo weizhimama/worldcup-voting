@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node backend/server.js",
     "dev": "node backend/server.js",
-    "check:env": "node scripts/check-env.js"
+    "check:env": "node scripts/check-env.js",
+    "sync:schedule": "PATH=\"$HOME/.nvm/versions/node/v20.20.2/bin:$PATH\" node scripts/sync-worldcup-schedule.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
