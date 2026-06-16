@@ -128,16 +128,18 @@ async function getSingleValue(sql, params = [], key = 'c') {
 // 根据 match_time / end_time 与当前时间对比自动更新 status
 async function autoUpdateMatchStatus() {
   const now = formatInAppTimeZone();
-  // upcoming -> live：比赛开始时间已过，但还没到结束时间
- await db.prepare(`
-    UPDATE matches SET status = 'live'
-    WHERE status = 'upcoming' AND match_time <= ?
-    AND (end_time IS NULL OR end_time > ?)
-  `).run(now, now);
-  // live -> ended：已过结束时间
- await db.prepare(`
+  await db.prepare(`
     UPDATE matches SET status = 'ended'
-    WHERE status IN ('upcoming','live') AND end_time IS NOT NULL AND end_time <= ?
+    WHERE end_time IS NOT NULL AND end_time <= ?
+  `).run(now);
+  await db.prepare(`
+    UPDATE matches SET status = 'live'
+    WHERE match_time <= ?
+      AND (end_time IS NULL OR end_time > ?)
+  `).run(now, now);
+  await db.prepare(`
+    UPDATE matches SET status = 'upcoming'
+    WHERE match_time > ?
   `).run(now);
 }
 

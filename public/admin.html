@@ -865,7 +865,9 @@ async function loadMatches(page) {
   if (!matches.length) { tbody.innerHTML = `<tr><td colspan="8" class="empty">暂无数据</td></tr>`; return; }
 
   const statusMap = { upcoming:'<span class="badge badge-upcoming">即将开始</span>', live:'<span class="badge badge-live">进行中</span>', ended:'<span class="badge badge-ended">已结束</span>' };
-  tbody.innerHTML = matches.map(m => `
+  tbody.innerHTML = matches.map(m => {
+    const actualStatus = calcMatchStatus(m.match_time, m.end_time);
+    return `
     <tr>
       <td>${m.id}</td>
       <td>${m.group_name} ${m.round}</td>
@@ -873,8 +875,8 @@ async function loadMatches(page) {
       <td><div class="flag-cell">${flagHtml(m.away_flag)}<span>${m.away_team}</span></div></td>
       <td>${fmtTime(m.match_time)}</td>
       <td>
-        ${statusMap[m.status] || m.status}
-        ${m.status === 'ended' && m.home_score !== null ? `<div style="font-size:12px;color:var(--muted)">${m.home_score}:${m.away_score}</div>` : ''}
+        ${statusMap[actualStatus] || actualStatus}
+        ${actualStatus === 'ended' && m.home_score !== null ? `<div style="font-size:12px;color:var(--muted)">${m.home_score}:${m.away_score}</div>` : ''}
       </td>
       <td>${m.total_votes}</td>
       <td>
@@ -882,7 +884,7 @@ async function loadMatches(page) {
         <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteMatch(${m.id})">删除</button>
       </td>
     </tr>
-  `).join('');
+  `}).join('');
 
   renderPagination('matches-pagination', matchesPage, Math.ceil(total/matchesPageSize), (p) => loadMatches(p));
 }
@@ -1119,6 +1121,16 @@ function autoCalcStatus() {
   badge.textContent = `${icon} ${label}`;
   if (note) note.textContent = `基于当前时间 ${now.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})} 自动计算`;
   if (select) select.value = status;
+}
+
+function calcMatchStatus(matchTime, endTime) {
+  if (!matchTime) return 'upcoming';
+  const now = new Date();
+  const start = new Date(String(matchTime).replace(' ', 'T'));
+  const end = endTime ? new Date(String(endTime).replace(' ', 'T')) : null;
+  if (end && end <= now) return 'ended';
+  if (start <= now) return 'live';
+  return 'upcoming';
 }
 
 async function uploadFlag(side, input) {
