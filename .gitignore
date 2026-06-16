@@ -13,3 +13,4 @@ backend/worldcup.db-wal
 backend/.DS_Store
 
 .vercel/
+.vercel

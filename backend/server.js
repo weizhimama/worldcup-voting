@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const db = require('./db');
 const { hasSupabaseStorage, uploadFlag } = require('./storage');
+const { worldCup2026Schedule } = require('./worldcup2026-schedule');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -124,9 +125,74 @@ async function getSingleValue(sql, params = [], key = 'c') {
   return row?.[key] || 0;
 }
 
+let scheduleSyncPromise = null;
+
+async function ensureWorldCupSchedule() {
+  if (!scheduleSyncPromise) {
+    scheduleSyncPromise = (async () => {
+      const first = worldCup2026Schedule[0];
+      const last = worldCup2026Schedule[worldCup2026Schedule.length - 1];
+      const current = await db.prepare(`
+        SELECT COUNT(*) as count,
+               MIN(match_time) as first_time,
+               MAX(match_time) as last_time
+        FROM matches
+      `).get();
+
+      const alreadySynced = current?.count === worldCup2026Schedule.length
+        && String(current.first_time || '').startsWith(first.matchTime.slice(0, 16))
+        && String(current.last_time || '').startsWith(last.matchTime.slice(0, 16));
+
+      if (alreadySynced) return;
+
+      await db.transaction(async () => {
+        await db.prepare('DELETE FROM votes').run();
+        await db.prepare('DELETE FROM vote_stats').run();
+        await db.prepare('UPDATE users SET total_votes = 0, correct_votes = 0').run();
+        await db.prepare('UPDATE bottles SET match_id = NULL').run();
+        await db.prepare('DELETE FROM matches').run();
+
+        const insertMatch = db.prepare(`
+          INSERT INTO matches
+          (group_name, round, home_team, home_flag, home_rank, away_team, away_flag, away_rank, match_time, end_time, status, home_score, away_score)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        const insertStats = db.prepare('INSERT OR IGNORE INTO vote_stats (match_id) VALUES (?)');
+
+        for (const match of worldCup2026Schedule) {
+          const result = await insertMatch.run(
+            match.groupName,
+            match.round,
+            match.homeTeam,
+            match.homeFlag,
+            null,
+            match.awayTeam,
+            match.awayFlag,
+            null,
+            match.matchTime,
+            match.endTime,
+            'upcoming',
+            null,
+            null
+          );
+          await insertStats.run(result.lastInsertRowid);
+        }
+      })();
+
+      console.log(`世界杯真实赛程已同步：${worldCup2026Schedule.length} 场`);
+    })().catch((error) => {
+      scheduleSyncPromise = null;
+      throw error;
+    });
+  }
+
+  return scheduleSyncPromise;
+}
+
 // ==================== 赛事状态自动更新 ====================
 // 根据 match_time / end_time 与当前时间对比自动更新 status
 async function autoUpdateMatchStatus() {
+  await ensureWorldCupSchedule();
   const now = formatInAppTimeZone();
   // upcoming -> live：比赛开始时间已过，但还没到结束时间
  await db.prepare(`
