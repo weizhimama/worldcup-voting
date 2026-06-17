@@ -709,8 +709,8 @@ app.post('/api/bottles/:bottleId/replies', async (req, res) => {
 // 用户注册
 app.post('/api/user/register', async (req, res) => {
   try {
-    const { userId, username, password, nickname } = req.body;
-    if (!userId || !username || !password) {
+    const { userId, username, password, nickname, claimGuestData } = req.body;
+    if (!username || !password) {
       return res.status(400).json({ success: false, error: '缺少必填字段' });
     }
     if (username.length < 2 || username.length > 20) {
@@ -720,14 +720,22 @@ app.post('/api/user/register', async (req, res) => {
       return res.status(400).json({ success: false, error: '密码至少6位' });
     }
 
-    const existing = await db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(username, userId);
+    const existing = await db.prepare('SELECT id FROM users WHERE username = ?').get(username);
     if (existing) {
       return res.status(400).json({ success: false, error: '用户名已被使用，请换一个' });
     }
 
-    const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    let newUserId = uuidv4();
+    if (claimGuestData && userId) {
+      const guest = await db.prepare('SELECT id, is_setup FROM users WHERE id = ?').get(userId);
+      if (guest && !guest.is_setup) {
+        newUserId = userId;
+      }
+    }
+
+    const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(newUserId);
     if (!user) {
-     await db.prepare('INSERT INTO users (id) VALUES (?)').run(userId);
+     await db.prepare('INSERT INTO users (id) VALUES (?)').run(newUserId);
     }
 
     const passwordHash = sha256(password);
@@ -736,9 +744,9 @@ app.post('/api/user/register', async (req, res) => {
    await db.prepare(`
       UPDATE users SET username = ?, password_hash = ?, nickname = ?, is_setup = 1
       WHERE id = ?
-    `).run(username, passwordHash, displayNickname, userId);
+    `).run(username, passwordHash, displayNickname, newUserId);
 
-    const updated = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    const updated = await db.prepare('SELECT * FROM users WHERE id = ?').get(newUserId);
     res.json({ success: true, data: updated });
   } catch (error) {
     if (error.message && error.message.includes('UNIQUE')) {
@@ -1380,6 +1388,40 @@ app.get('/api/admin/users/:id', adminAuth, async (req, res) => {
     `).all(id);
 
     res.json({ success: true, data: { user: { ...user, ...stats }, votes, bottles } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/admin/users/:id/data', adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await db.prepare('SELECT id, username FROM users WHERE id = ?').get(id);
+    if (!user) return res.status(404).json({ success: false, error: '用户不存在' });
+
+    await db.transaction(async () => {
+      await db.prepare(`
+        DELETE FROM bottle_replies
+        WHERE user_id = ?
+           OR bottle_id IN (SELECT id FROM bottles WHERE user_id = ?)
+      `).run(id, id);
+      await db.prepare(`
+        DELETE FROM user_picks
+        WHERE user_id = ?
+           OR bottle_id IN (SELECT id FROM bottles WHERE user_id = ?)
+      `).run(id, id);
+      await db.prepare('DELETE FROM votes WHERE user_id = ?').run(id);
+      await db.prepare('DELETE FROM bottles WHERE user_id = ?').run(id);
+      await db.prepare(`
+        UPDATE users SET total_votes = 0, correct_votes = 0, total_bottles = 0
+        WHERE id = ?
+      `).run(id);
+    })();
+
+    await recomputeVoteStats();
+    await recomputeCorrectVotes(id);
+    await logAction(req.admin, '清空用户数据', 'user', id, { username: user.username });
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

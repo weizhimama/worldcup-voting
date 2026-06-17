@@ -342,7 +342,7 @@ async function doRegister() {
     btn.disabled = true; btn.textContent = '设置中...';
     const result = await apiRequest('/user/register', {
         method: 'POST',
-        body: JSON.stringify({ userId: state.userId, username, nickname, password })
+        body: JSON.stringify({ username, nickname, password })
     });
     btn.disabled = false; btn.textContent = '开始参与';
 
@@ -350,6 +350,8 @@ async function doRegister() {
         const previousPage = state.currentPage;
         const previousMatchId = state.currentMatch?.id;
         const previousBottleTab = state.currentBottleTab || 'thrown';
+        state.userId = result.data.id;
+        localStorage.setItem('userId', result.data.id);
         state.user = result.data;
         hideAuthOverlay();
         showToast(`欢迎加入，${result.data.nickname || username}！`);
