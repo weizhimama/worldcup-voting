@@ -164,6 +164,120 @@ async function getSingleValue(sql, params = [], key = 'c') {
   return row?.[key] || 0;
 }
 
+const ADMIN_PAGE_SIZES = [20, 50, 100];
+
+function normalizeAdminPagination(query, defaultPageSize = 20) {
+  const requestedPage = parseInt(query.page, 10);
+  const requestedPageSize = parseInt(query.pageSize, 10);
+  const fallbackSize = ADMIN_PAGE_SIZES.includes(defaultPageSize) ? defaultPageSize : 20;
+  return {
+    page: Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1,
+    pageSize: ADMIN_PAGE_SIZES.includes(requestedPageSize) ? requestedPageSize : fallbackSize
+  };
+}
+
+function clampAdminPagination(total, pagination) {
+  const totalPages = Math.max(1, Math.ceil((total || 0) / pagination.pageSize));
+  const page = Math.min(Math.max(1, pagination.page), totalPages);
+  return {
+    ...pagination,
+    page,
+    totalPages,
+    offset: (page - 1) * pagination.pageSize
+  };
+}
+
+async function recomputeVoteStats(matchId = null) {
+  if (matchId) {
+    await db.prepare(`
+      UPDATE vote_stats SET
+        home_votes = (SELECT COUNT(*) FROM votes WHERE match_id = ? AND choice = 'home'),
+        draw_votes = (SELECT COUNT(*) FROM votes WHERE match_id = ? AND choice = 'draw'),
+        away_votes = (SELECT COUNT(*) FROM votes WHERE match_id = ? AND choice = 'away'),
+        total_votes = (SELECT COUNT(*) FROM votes WHERE match_id = ?)
+      WHERE match_id = ?
+    `).run(matchId, matchId, matchId, matchId, matchId);
+    return;
+  }
+
+  await db.prepare(`
+    UPDATE vote_stats SET
+      home_votes = (SELECT COUNT(*) FROM votes WHERE match_id = vote_stats.match_id AND choice = 'home'),
+      draw_votes = (SELECT COUNT(*) FROM votes WHERE match_id = vote_stats.match_id AND choice = 'draw'),
+      away_votes = (SELECT COUNT(*) FROM votes WHERE match_id = vote_stats.match_id AND choice = 'away'),
+      total_votes = (SELECT COUNT(*) FROM votes WHERE match_id = vote_stats.match_id)
+  `).run();
+}
+
+async function recomputeCorrectVotes(userId = null) {
+  const where = userId ? 'WHERE users.id = ?' : '';
+  const params = userId ? [userId] : [];
+  await db.prepare(`
+    UPDATE users SET correct_votes = (
+      SELECT COUNT(*)
+      FROM votes v
+      JOIN matches m ON v.match_id = m.id
+      WHERE v.user_id = users.id
+        AND m.status = 'ended'
+        AND m.home_score IS NOT NULL
+        AND m.away_score IS NOT NULL
+        AND v.choice = CASE
+          WHEN m.home_score > m.away_score THEN 'home'
+          WHEN m.home_score < m.away_score THEN 'away'
+          ELSE 'draw'
+        END
+    )
+    ${where}
+  `).run(...params);
+}
+
+async function getComputedUserStats(userId) {
+  const totalVotes = await getSingleValue('SELECT COUNT(*) as c FROM votes WHERE user_id = ?', [userId]);
+  const correctVotes = await getSingleValue(`
+    SELECT COUNT(*) as c
+    FROM votes v
+    JOIN matches m ON v.match_id = m.id
+    WHERE v.user_id = ?
+      AND m.status = 'ended'
+      AND m.home_score IS NOT NULL
+      AND m.away_score IS NOT NULL
+      AND v.choice = CASE
+        WHEN m.home_score > m.away_score THEN 'home'
+        WHEN m.home_score < m.away_score THEN 'away'
+        ELSE 'draw'
+      END
+  `, [userId]);
+  const thrownBottles = await getSingleValue('SELECT COUNT(*) as c FROM bottles WHERE user_id = ?', [userId]);
+  const collectedBottles = await getSingleValue('SELECT COUNT(*) as c FROM user_picks WHERE user_id = ?', [userId]);
+  const receivedReplies = await getSingleValue(`
+    SELECT COUNT(*) as c
+    FROM bottle_replies r
+    JOIN bottles b ON r.bottle_id = b.id
+    WHERE b.user_id = ? AND r.user_id != ?
+  `, [userId, userId]);
+  const sentReplies = await getSingleValue('SELECT COUNT(*) as c FROM bottle_replies WHERE user_id = ?', [userId]);
+  const totalMatches = await getSingleValue('SELECT COUNT(*) as c FROM matches');
+  const accuracy = totalVotes > 0 ? Math.round((correctVotes / totalVotes) * 100) : 0;
+
+  return {
+    total_votes: totalVotes,
+    correct_votes: correctVotes,
+    total_bottles: thrownBottles,
+    collected_bottles: collectedBottles,
+    total_bottle_all: thrownBottles + collectedBottles,
+    received_replies: receivedReplies,
+    sent_replies: sentReplies,
+    accuracy: `${accuracy}%`,
+    achievements: {
+      predictNovice: { unlocked: totalVotes >= 5, progress: totalVotes, target: 5 },
+      prophecyMaster: { unlocked: correctVotes >= 3, progress: correctVotes, target: 3 },
+      bottleDrifter: { unlocked: thrownBottles >= 5, progress: thrownBottles, target: 5 },
+      fatedFriend: { unlocked: receivedReplies >= 5, progress: receivedReplies, target: 5 },
+      fullAttendance: { unlocked: totalMatches > 0 && totalVotes >= totalMatches, progress: totalVotes, target: totalMatches }
+    }
+  };
+}
+
 // ==================== 赛事状态自动更新 ====================
 // 根据 match_time / end_time 与当前时间对比自动更新 status
 async function autoUpdateMatchStatus() {
@@ -205,6 +319,12 @@ async function autoUpdateMatchStatus() {
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
 
 app.get('/api/health', (req, res) => {
   res.json({
@@ -222,7 +342,13 @@ app.get('/api/health', (req, res) => {
 // 用户ID中间件
 app.use(async (req, res, next) => {
   try {
-    if (req.path === '/api/user/register' || req.path === '/api/user/login' || req.path === '/api/admin/login') {
+    if (
+      req.path === '/api/user/register' ||
+      req.path === '/api/user/login' ||
+      req.path === '/api/admin/login' ||
+      req.path.startsWith('/api/admin') ||
+      req.path.startsWith('/api/upload')
+    ) {
       return next();
     }
 
@@ -361,6 +487,8 @@ app.post('/api/votes', async (req, res) => {
       await db.prepare('UPDATE users SET total_votes = total_votes + 1 WHERE id = ?').run(req.userId);
     })();
 
+    await recomputeCorrectVotes(req.userId);
+
     const stats = await db.prepare('SELECT * FROM vote_stats WHERE match_id = ?').get(matchId);
     res.json({ success: true, data: stats });
   } catch (error) {
@@ -388,6 +516,8 @@ app.delete('/api/votes/:matchId', async (req, res) => {
       await db.prepare(`UPDATE vote_stats SET ${col} = MAX(0, ${col} - 1), total_votes = MAX(0, total_votes - 1) WHERE match_id = ?`).run(matchId);
       await db.prepare('UPDATE users SET total_votes = MAX(0, total_votes - 1) WHERE id = ?').run(req.userId);
     })();
+
+    await recomputeCorrectVotes(req.userId);
 
     const stats = await db.prepare('SELECT * FROM vote_stats WHERE match_id = ?').get(matchId);
     res.json({ success: true, data: stats });
@@ -519,7 +649,7 @@ app.get('/api/bottles/count', async (req, res) => {
 app.get('/api/bottles/:bottleId', async (req, res) => {
   try {
     const bottle = await db.prepare(`
-      SELECT b.*, u.nickname, u.avatar,
+      SELECT b.*, u.nickname, u.username, u.avatar,
         m.home_team, m.away_team
       FROM bottles b
       LEFT JOIN users u ON b.user_id = u.id
@@ -537,7 +667,7 @@ app.get('/api/bottles/:bottleId', async (req, res) => {
 app.get('/api/bottles/:bottleId/replies', async (req, res) => {
   try {
     const replies = await db.prepare(`
-      SELECT r.*, u.nickname, u.avatar
+      SELECT r.*, u.nickname, u.username, u.avatar
       FROM bottle_replies r
       LEFT JOIN users u ON r.user_id = u.id
       WHERE r.bottle_id = ?
@@ -564,7 +694,7 @@ app.post('/api/bottles/:bottleId/replies', async (req, res) => {
     ).run(req.params.bottleId, req.userId, content);
 
     const reply = await db.prepare(`
-      SELECT r.*, u.nickname, u.avatar FROM bottle_replies r
+      SELECT r.*, u.nickname, u.username, u.avatar FROM bottle_replies r
       LEFT JOIN users u ON r.user_id = u.id WHERE r.id = ?
     `).get(result.lastInsertRowid);
 
@@ -680,9 +810,11 @@ app.get('/api/user/check-username', async (req, res) => {
 // 获取用户信息
 app.get('/api/user/profile', async (req, res) => {
   try {
+    await recomputeCorrectVotes(req.userId);
     const user = await db.prepare('SELECT id, nickname, avatar, level, total_votes, correct_votes, total_bottles, username, is_setup, created_at FROM users WHERE id = ?').get(req.userId);
     if (!user) return res.status(404).json({ success: false, error: '用户不存在' });
-    res.json({ success: true, data: user });
+    const stats = await getComputedUserStats(req.userId);
+    res.json({ success: true, data: { ...user, ...stats } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -695,7 +827,8 @@ app.put('/api/user/profile', async (req, res) => {
    await db.prepare('UPDATE users SET nickname = COALESCE(?, nickname), avatar = COALESCE(?, avatar) WHERE id = ?')
       .run(nickname || null, avatar || null, req.userId);
     const user = await db.prepare('SELECT id, nickname, avatar, level, total_votes, correct_votes, total_bottles, username, is_setup FROM users WHERE id = ?').get(req.userId);
-    res.json({ success: true, data: user });
+    const stats = await getComputedUserStats(req.userId);
+    res.json({ success: true, data: { ...user, ...stats } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -704,19 +837,10 @@ app.put('/api/user/profile', async (req, res) => {
 // 获取用户统计（含本人漂流瓶投出+收到总数）
 app.get('/api/user/stats', async (req, res) => {
   try {
-    const user = await db.prepare('SELECT total_votes, correct_votes, total_bottles FROM users WHERE id = ?').get(req.userId);
+    await recomputeCorrectVotes(req.userId);
+    const user = await db.prepare('SELECT id FROM users WHERE id = ?').get(req.userId);
     if (!user) return res.status(404).json({ success: false, error: '用户不存在' });
-    const collectedCount = await getSingleValue('SELECT COUNT(*) as c FROM user_picks WHERE user_id = ?', [req.userId]);
-    const accuracy = user.total_votes > 0 ? Math.round((user.correct_votes / user.total_votes) * 100) : 0;
-    res.json({
-      success: true,
-      data: {
-        ...user,
-        total_bottle_all: (user.total_bottles || 0) + (collectedCount || 0),
-        collected_bottles: collectedCount,
-        accuracy: `${accuracy}%`
-      }
-    });
+    res.json({ success: true, data: await getComputedUserStats(req.userId) });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -727,6 +851,7 @@ app.get('/api/user/stats', async (req, res) => {
 app.get('/api/stats/global', async (req, res) => {
   try {
     await autoUpdateMatchStatus();
+    if (req.userId) await recomputeCorrectVotes(req.userId);
     const week = normalizeMatchRange(getAppWeekRange());
     const weekCount = await getSingleValue(`
       SELECT COUNT(*) as c FROM matches
@@ -739,15 +864,14 @@ app.get('/api/stats/global', async (req, res) => {
     // 当前用户投票数
     let myVotes = 0;
     if (req.userId) {
-      const u = await db.prepare('SELECT total_votes FROM users WHERE id = ?').get(req.userId);
-      myVotes = u ? (u.total_votes || 0) : 0;
+      myVotes = await getSingleValue('SELECT COUNT(*) as c FROM votes WHERE user_id = ?', [req.userId]);
     }
     // 当前用户漂流瓶数（投出+收到）
     let myBottles = 0;
     if (req.userId) {
-      const u = await db.prepare('SELECT total_bottles FROM users WHERE id = ?').get(req.userId);
-      const picked = await db.prepare('SELECT COUNT(*) as c FROM user_picks WHERE user_id = ?').get(req.userId);
-      myBottles = (u ? (u.total_bottles || 0) : 0) + (picked ? (picked.c || 0) : 0);
+      const thrown = await getSingleValue('SELECT COUNT(*) as c FROM bottles WHERE user_id = ?', [req.userId]);
+      const picked = await getSingleValue('SELECT COUNT(*) as c FROM user_picks WHERE user_id = ?', [req.userId]);
+      myBottles = thrown + picked;
     }
 
     res.json({
@@ -767,7 +891,7 @@ app.get('/api/stats/global', async (req, res) => {
 
 // ==================== 图片上传API ====================
 
-app.post('/api/upload/flag', upload.single('flag'), async (req, res) => {
+app.post('/api/upload/flag', adminAuth, upload.single('flag'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, error: '请选择图片文件' });
     const url = await uploadFlag(req.file);
@@ -856,13 +980,14 @@ app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
 app.get('/api/admin/matches', adminAuth, async (req, res) => {
   try {
     await autoUpdateMatchStatus();
-    const { status, page = 1, pageSize = 20 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(pageSize);
+    const { status } = req.query;
+    const requestedPagination = normalizeAdminPagination(req.query, 20);
     let where = '';
     const params = [];
     if (status) { where = 'WHERE m.status = ?'; params.push(status); }
 
     const total = await getSingleValue(`SELECT COUNT(*) as c FROM matches m ${where}`, params);
+    const pagination = clampAdminPagination(total, requestedPagination);
     const matches = await db.prepare(`
       SELECT m.*,
         COALESCE(vs.home_votes, 0) as home_votes,
@@ -871,9 +996,29 @@ app.get('/api/admin/matches', adminAuth, async (req, res) => {
         COALESCE(vs.total_votes, 0) as total_votes
       FROM matches m LEFT JOIN vote_stats vs ON m.id = vs.match_id
       ${where} ORDER BY m.match_time ASC LIMIT ? OFFSET ?
-    `).all(...params, parseInt(pageSize), offset);
+    `).all(...params, pagination.pageSize, pagination.offset);
 
-    res.json({ success: true, data: { total, page: parseInt(page), pageSize: parseInt(pageSize), matches } });
+    res.json({ success: true, data: { total, page: pagination.page, pageSize: pagination.pageSize, totalPages: pagination.totalPages, matches } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/admin/matches/:id(\\d+)', adminAuth, async (req, res) => {
+  try {
+    await autoUpdateMatchStatus();
+    const match = await db.prepare(`
+      SELECT m.*,
+        COALESCE(vs.home_votes, 0) as home_votes,
+        COALESCE(vs.draw_votes, 0) as draw_votes,
+        COALESCE(vs.away_votes, 0) as away_votes,
+        COALESCE(vs.total_votes, 0) as total_votes
+      FROM matches m LEFT JOIN vote_stats vs ON m.id = vs.match_id
+      WHERE m.id = ?
+    `).get(req.params.id);
+
+    if (!match) return res.status(404).json({ success: false, error: '比赛不存在' });
+    res.json({ success: true, data: match });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -976,13 +1121,7 @@ app.put('/api/admin/matches/:id', adminAuth, async (req, res) => {
       WHERE id = ?
     `).run(group_name, round, home_team, home_flag, home_rank, away_team, away_flag, away_rank, normalizedMatchTime, normalizedEndTime, status, home_score, away_score, id);
 
-    if (status === 'ended' && home_score !== undefined && away_score !== undefined) {
-      let correctChoice = home_score > away_score ? 'home' : home_score < away_score ? 'away' : 'draw';
-     await db.prepare(`
-        UPDATE users SET correct_votes = correct_votes + 1
-        WHERE id IN (SELECT user_id FROM votes WHERE match_id = ? AND choice = ?)
-      `).run(id, correctChoice);
-    }
+    await recomputeCorrectVotes();
 
     await logAction(req.admin, '更新比赛', 'match', id, { before: { status: existing.status }, after: req.body });
     res.json({ success: true });
@@ -999,12 +1138,15 @@ app.delete('/api/admin/matches/:id', adminAuth, async (req, res) => {
     if (!existing) return res.status(404).json({ success: false, error: '比赛不存在' });
 
     await db.transaction(async () => {
+      await db.prepare('DELETE FROM bottle_replies WHERE bottle_id IN (SELECT id FROM bottles WHERE match_id = ?)').run(id);
+      await db.prepare('DELETE FROM user_picks WHERE bottle_id IN (SELECT id FROM bottles WHERE match_id = ?)').run(id);
       await db.prepare('DELETE FROM votes WHERE match_id = ?').run(id);
       await db.prepare('DELETE FROM vote_stats WHERE match_id = ?').run(id);
       await db.prepare('DELETE FROM bottles WHERE match_id = ?').run(id);
       await db.prepare('DELETE FROM matches WHERE id = ?').run(id);
     })();
 
+    await recomputeCorrectVotes();
     await logAction(req.admin, '删除比赛', 'match', id, { home_team: existing.home_team, away_team: existing.away_team });
     res.json({ success: true });
   } catch (error) {
@@ -1034,20 +1176,21 @@ app.get('/api/admin/votes/match/:matchId', adminAuth, async (req, res) => {
 
 app.get('/api/admin/votes', adminAuth, async (req, res) => {
   try {
-    const { matchId, page = 1, pageSize = 50 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(pageSize);
+    const { matchId } = req.query;
+    const requestedPagination = normalizeAdminPagination(req.query, 20);
     let where = '';
     const params = [];
     if (matchId) { where = 'WHERE v.match_id = ?'; params.push(matchId); }
 
     const total = await getSingleValue(`SELECT COUNT(*) as c FROM votes v ${where}`, params);
+    const pagination = clampAdminPagination(total, requestedPagination);
     const votes = await db.prepare(`
       SELECT v.id, v.user_id, v.choice, v.created_at, m.home_team, m.away_team, m.home_flag, m.away_flag
       FROM votes v JOIN matches m ON v.match_id = m.id
       ${where} ORDER BY v.created_at DESC LIMIT ? OFFSET ?
-    `).all(...params, parseInt(pageSize), offset);
+    `).all(...params, pagination.pageSize, pagination.offset);
 
-    res.json({ success: true, data: { total, page: parseInt(page), votes } });
+    res.json({ success: true, data: { total, page: pagination.page, pageSize: pagination.pageSize, totalPages: pagination.totalPages, votes } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1057,28 +1200,64 @@ app.get('/api/admin/votes', adminAuth, async (req, res) => {
 
 app.get('/api/admin/bottles', adminAuth, async (req, res) => {
   try {
-    const { type, page = 1, pageSize = 20 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(pageSize);
+    const { type } = req.query;
+    const requestedPagination = normalizeAdminPagination(req.query, 20);
     let where = '';
     const params = [];
     if (type) { where = 'WHERE b.type = ?'; params.push(type); }
 
     const total = await getSingleValue(`SELECT COUNT(*) as c FROM bottles b ${where}`, params);
+    const pagination = clampAdminPagination(total, requestedPagination);
     const bottles = await db.prepare(`
       SELECT b.*, m.home_team, m.away_team,
+             COALESCE(NULLIF(u.username, ''), 'ball_fan_1') as author_username,
+             COALESCE(NULLIF(u.nickname, ''), '球迷小明') as author_nickname,
              (SELECT COUNT(*) FROM user_picks WHERE bottle_id = b.id) as pick_count,
              (SELECT COUNT(*) FROM bottle_replies WHERE bottle_id = b.id) as reply_count
       FROM bottles b LEFT JOIN matches m ON b.match_id = m.id
+      LEFT JOIN users u ON b.user_id = u.id
       ${where} ORDER BY b.created_at DESC LIMIT ? OFFSET ?
-    `).all(...params, parseInt(pageSize), offset);
+    `).all(...params, pagination.pageSize, pagination.offset);
 
-    res.json({ success: true, data: { total, page: parseInt(page), bottles } });
+    res.json({ success: true, data: { total, page: pagination.page, pageSize: pagination.pageSize, totalPages: pagination.totalPages, bottles } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-app.delete('/api/admin/bottles/:id', adminAuth, async (req, res) => {
+app.get('/api/admin/bottles/:id(\\d+)', adminAuth, async (req, res) => {
+  try {
+    const bottle = await db.prepare(`
+      SELECT b.*, m.home_team, m.away_team,
+             COALESCE(NULLIF(u.username, ''), 'ball_fan_1') as author_username,
+             COALESCE(NULLIF(u.nickname, ''), '球迷小明') as author_nickname,
+             (SELECT COUNT(*) FROM user_picks WHERE bottle_id = b.id) as pick_count
+      FROM bottles b
+      LEFT JOIN matches m ON b.match_id = m.id
+      LEFT JOIN users u ON b.user_id = u.id
+      WHERE b.id = ?
+    `).get(req.params.id);
+
+    if (!bottle) return res.status(404).json({ success: false, error: '漂流瓶不存在' });
+
+    const replies = await db.prepare(`
+      SELECT r.*,
+             COALESCE(NULLIF(u.username, ''), 'ball_fan_1') as username,
+             COALESCE(NULLIF(u.nickname, ''), '球迷小明') as nickname,
+             COALESCE(NULLIF(u.avatar, ''), '⚽') as avatar
+      FROM bottle_replies r
+      LEFT JOIN users u ON r.user_id = u.id
+      WHERE r.bottle_id = ?
+      ORDER BY r.created_at ASC
+    `).all(req.params.id);
+
+    res.json({ success: true, data: { bottle, replies } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/admin/bottles/:id(\\d+)', adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const existing = await db.prepare('SELECT * FROM bottles WHERE id = ?').get(id);
@@ -1115,15 +1294,34 @@ app.get('/api/admin/bottles/stats', adminAuth, async (req, res) => {
 
 app.get('/api/admin/users', adminAuth, async (req, res) => {
   try {
-    const { page = 1, pageSize = 20 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(pageSize);
-    const total = await getSingleValue('SELECT COUNT(*) as c FROM users');
+    await recomputeCorrectVotes();
+    const requestedPagination = normalizeAdminPagination(req.query, 20);
+    const total = await getSingleValue("SELECT COUNT(*) as c FROM users WHERE username IS NOT NULL AND username != ''");
+    const pagination = clampAdminPagination(total, requestedPagination);
     const users = await db.prepare(`
-      SELECT u.id, u.nickname, u.username, u.avatar, u.level, u.total_votes, u.correct_votes, u.total_bottles, u.is_setup, u.is_preset, u.created_at,
+      SELECT u.id, u.nickname, u.username, u.avatar, u.level, u.is_setup, u.is_preset, u.created_at,
+        (SELECT COUNT(*) FROM votes WHERE user_id = u.id) as total_votes,
+        (
+          SELECT COUNT(*)
+          FROM votes v
+          JOIN matches m ON v.match_id = m.id
+          WHERE v.user_id = u.id
+            AND m.status = 'ended'
+            AND m.home_score IS NOT NULL
+            AND m.away_score IS NOT NULL
+            AND v.choice = CASE
+              WHEN m.home_score > m.away_score THEN 'home'
+              WHEN m.home_score < m.away_score THEN 'away'
+              ELSE 'draw'
+            END
+        ) as correct_votes,
+        (SELECT COUNT(*) FROM bottles WHERE user_id = u.id) as total_bottles,
         (SELECT COUNT(*) FROM user_picks WHERE user_id = u.id) as total_picks
-      FROM users u ORDER BY u.total_votes DESC LIMIT ? OFFSET ?
-    `).all(parseInt(pageSize), offset);
-    res.json({ success: true, data: { total, page: parseInt(page), users } });
+      FROM users u
+      WHERE u.username IS NOT NULL AND u.username != ''
+      ORDER BY total_votes DESC, u.created_at DESC LIMIT ? OFFSET ?
+    `).all(pagination.pageSize, pagination.offset);
+    res.json({ success: true, data: { total, page: pagination.page, pageSize: pagination.pageSize, totalPages: pagination.totalPages, users } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1135,9 +1333,28 @@ app.delete('/api/admin/users/unregistered', adminAuth, async (req, res) => {
     if (req.admin.role !== 'superadmin') {
       return res.status(403).json({ success: false, error: '仅超级管理员可操作' });
     }
-    const result = await db.prepare("DELETE FROM users WHERE is_setup = 0 AND is_preset = 0").run();
-    await logAction(req.admin, '批量删除未注册用户', 'user', null, { count: result.changes });
-    res.json({ success: true, data: { deleted: result.changes } });
+    const count = await getSingleValue("SELECT COUNT(*) as c FROM users WHERE is_setup = 0 AND is_preset = 0");
+
+    await db.transaction(async () => {
+      await db.prepare(`
+        DELETE FROM bottle_replies
+        WHERE user_id IN (SELECT id FROM users WHERE is_setup = 0 AND is_preset = 0)
+           OR bottle_id IN (SELECT id FROM bottles WHERE user_id IN (SELECT id FROM users WHERE is_setup = 0 AND is_preset = 0))
+      `).run();
+      await db.prepare(`
+        DELETE FROM user_picks
+        WHERE user_id IN (SELECT id FROM users WHERE is_setup = 0 AND is_preset = 0)
+           OR bottle_id IN (SELECT id FROM bottles WHERE user_id IN (SELECT id FROM users WHERE is_setup = 0 AND is_preset = 0))
+      `).run();
+      await db.prepare('DELETE FROM votes WHERE user_id IN (SELECT id FROM users WHERE is_setup = 0 AND is_preset = 0)').run();
+      await db.prepare('DELETE FROM bottles WHERE user_id IN (SELECT id FROM users WHERE is_setup = 0 AND is_preset = 0)').run();
+      await db.prepare('DELETE FROM users WHERE is_setup = 0 AND is_preset = 0').run();
+    })();
+
+    await recomputeVoteStats();
+    await recomputeCorrectVotes();
+    await logAction(req.admin, '批量删除未注册用户', 'user', null, { count });
+    res.json({ success: true, data: { deleted: count } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1146,8 +1363,10 @@ app.delete('/api/admin/users/unregistered', adminAuth, async (req, res) => {
 app.get('/api/admin/users/:id', adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    await recomputeCorrectVotes(id);
     const user = await db.prepare('SELECT id, nickname, username, avatar, level, total_votes, correct_votes, total_bottles, is_setup, is_preset, created_at FROM users WHERE id = ?').get(id);
     if (!user) return res.status(404).json({ success: false, error: '用户不存在' });
+    const stats = await getComputedUserStats(id);
 
     const votes = await db.prepare(`
       SELECT v.choice, v.created_at, m.home_team, m.away_team, m.home_flag, m.away_flag
@@ -1160,7 +1379,7 @@ app.get('/api/admin/users/:id', adminAuth, async (req, res) => {
       WHERE b.user_id = ? ORDER BY b.created_at DESC LIMIT 10
     `).all(id);
 
-    res.json({ success: true, data: { user, votes, bottles } });
+    res.json({ success: true, data: { user: { ...user, ...stats }, votes, bottles } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1211,19 +1430,20 @@ app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
 
 app.get('/api/admin/logs', adminAuth, async (req, res) => {
   try {
-    const { page = 1, pageSize = 30, action } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(pageSize);
+    const { action } = req.query;
+    const requestedPagination = normalizeAdminPagination(req.query, 20);
     let where = '';
     const params = [];
     if (action) { where = 'WHERE action LIKE ?'; params.push(`%${action}%`); }
 
     const total = await getSingleValue(`SELECT COUNT(*) as c FROM admin_logs ${where}`, params);
+    const pagination = clampAdminPagination(total, requestedPagination);
     const logs = await db.prepare(`
       SELECT * FROM admin_logs ${where}
       ORDER BY created_at DESC LIMIT ? OFFSET ?
-    `).all(...params, parseInt(pageSize), offset);
+    `).all(...params, pagination.pageSize, pagination.offset);
 
-    res.json({ success: true, data: { total, page: parseInt(page), logs } });
+    res.json({ success: true, data: { total, page: pagination.page, pageSize: pagination.pageSize, totalPages: pagination.totalPages, logs } });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

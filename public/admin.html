@@ -391,11 +391,16 @@
         <div class="card-header">
           <span class="card-title">赛事列表</span>
           <div style="display:flex;gap:8px">
-            <select class="form-control" style="width:120px" id="match-status-filter" onchange="loadMatches()">
+            <select class="form-control" style="width:120px" id="match-status-filter" onchange="loadMatches(1)">
               <option value="">全部状态</option>
               <option value="upcoming">即将开始</option>
               <option value="live">进行中</option>
               <option value="ended">已结束</option>
+            </select>
+            <select class="form-control" style="width:100px" id="matches-page-size" onchange="changePageSize('matches', this.value)">
+              <option value="20">20/页</option>
+              <option value="50">50/页</option>
+              <option value="100">100/页</option>
             </select>
           </div>
         </div>
@@ -432,17 +437,24 @@
       <div class="card">
         <div class="card-header">
           <span class="card-title">瓶子列表</span>
-          <select class="form-control" style="width:120px" id="bottle-type-filter" onchange="loadBottles()">
-            <option value="">全部类型</option>
-            <option value="support">支持宣言</option>
-            <option value="predict">比分预测</option>
-            <option value="chat">闲聊祝福</option>
-            <option value="meet">遇见有缘</option>
-          </select>
+          <div style="display:flex;gap:8px">
+            <select class="form-control" style="width:120px" id="bottle-type-filter" onchange="loadBottles(1)">
+              <option value="">全部类型</option>
+              <option value="support">支持宣言</option>
+              <option value="predict">比分预测</option>
+              <option value="chat">闲聊祝福</option>
+              <option value="meet">遇见有缘</option>
+            </select>
+            <select class="form-control" style="width:100px" id="bottles-page-size" onchange="changePageSize('bottles', this.value)">
+              <option value="20">20/页</option>
+              <option value="50">50/页</option>
+              <option value="100">100/页</option>
+            </select>
+          </div>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>类型</th><th>内容</th><th>关联比赛</th><th>被收次数</th><th>时间</th><th>操作</th></tr></thead>
+            <thead><tr><th>ID</th><th>类型</th><th>投放人</th><th>内容</th><th>关联比赛</th><th>被收/回复</th><th>时间</th><th>操作</th></tr></thead>
             <tbody id="bottles-tbody"></tbody>
           </table>
         </div>
@@ -457,7 +469,12 @@
         <div class="card-header">
           <span class="card-title">用户列表</span>
           <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-secondary btn-sm" onclick="loadUsers()">刷新</button>
+            <select class="form-control" style="width:100px" id="users-page-size" onchange="changePageSize('users', this.value)">
+              <option value="20">20/页</option>
+              <option value="50">50/页</option>
+              <option value="100">100/页</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="loadUsers(1)">刷新</button>
             <button class="btn btn-danger btn-sm" id="btn-del-unregistered" onclick="deleteUnregisteredUsers()" style="display:none">🗑️ 清理无用户名用户</button>
           </div>
         </div>
@@ -481,9 +498,14 @@
           <span class="card-title">管理员操作记录</span>
           <div style="display:flex;gap:8px;align-items:center">
             <input class="form-control" style="width:160px" id="log-action-filter" placeholder="按操作筛选..."
-              onkeydown="if(event.key==='Enter')loadLogs()">
-            <button class="btn btn-secondary btn-sm" onclick="loadLogs()">搜索</button>
-            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('log-action-filter').value='';loadLogs()">重置</button>
+              onkeydown="if(event.key==='Enter')loadLogs(1)">
+            <select class="form-control" style="width:100px" id="logs-page-size" onchange="changePageSize('logs', this.value)">
+              <option value="20">20/页</option>
+              <option value="50">50/页</option>
+              <option value="100">100/页</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="loadLogs(1)">搜索</button>
+            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('log-action-filter').value='';loadLogs(1)">重置</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -722,6 +744,17 @@
   </div>
 </div>
 
+<!-- ===== 漂流瓶详情 模态框 ===== -->
+<div id="modal-bottle-detail" class="modal-overlay hidden">
+  <div class="modal-box md">
+    <div class="modal-head">
+      <h3>🍶 漂流瓶详情</h3>
+      <button class="modal-close" onclick="closeModal('modal-bottle-detail')">×</button>
+    </div>
+    <div class="modal-body" id="bottle-detail-body"></div>
+  </div>
+</div>
+
 <!-- ===== 添加管理员 模态框 ===== -->
 <div id="modal-add-admin" class="modal-overlay hidden">
   <div class="modal-box sm">
@@ -803,7 +836,9 @@ function switchSection(name) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('section-' + name).classList.add('active');
-  event.currentTarget.classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => {
+    if (n.getAttribute('onclick') === `switchSection('${name}')`) n.classList.add('active');
+  });
   currentSection = name;
   if (name === 'dashboard') loadDashboard();
   else if (name === 'matches') loadMatches();
@@ -850,7 +885,19 @@ async function loadDashboard() {
 
 // ==================== 赛事管理 ====================
 let matchesPage = 1;
-const matchesPageSize = 20;
+let matchesPageSize = 20;
+
+let bottlesPageSize = 20;
+let usersPageSize = 20;
+let logsPageSize = 20;
+
+function changePageSize(section, value) {
+  const size = [20, 50, 100].includes(parseInt(value, 10)) ? parseInt(value, 10) : 20;
+  if (section === 'matches') { matchesPageSize = size; loadMatches(1); }
+  else if (section === 'bottles') { bottlesPageSize = size; loadBottles(1); }
+  else if (section === 'users') { usersPageSize = size; loadUsers(1); }
+  else if (section === 'logs') { logsPageSize = size; loadLogs(1); }
+}
 
 async function loadMatches(page) {
   if (page !== undefined) matchesPage = page;
@@ -859,10 +906,18 @@ async function loadMatches(page) {
   if (status) params.append('status', status);
   const res = await API('/admin/matches?' + params);
   if (!res.success) return showToast('加载失败', 'error');
-  const { matches, total } = res.data;
+  const { matches, total, page: safePage, pageSize, totalPages } = res.data;
+  matchesPage = safePage || matchesPage;
+  matchesPageSize = pageSize || matchesPageSize;
+  const pageSizeEl = document.getElementById('matches-page-size');
+  if (pageSizeEl) pageSizeEl.value = String(matchesPageSize);
 
   const tbody = document.getElementById('matches-tbody');
-  if (!matches.length) { tbody.innerHTML = `<tr><td colspan="8" class="empty">暂无数据</td></tr>`; return; }
+  if (!matches.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">暂无数据</td></tr>`;
+    renderPagination('matches-pagination', matchesPage, totalPages || 1, (p) => loadMatches(p));
+    return;
+  }
 
   const statusMap = { upcoming:'<span class="badge badge-upcoming">即将开始</span>', live:'<span class="badge badge-live">进行中</span>', ended:'<span class="badge badge-ended">已结束</span>' };
   tbody.innerHTML = matches.map(m => {
@@ -886,7 +941,7 @@ async function loadMatches(page) {
     </tr>
   `}).join('');
 
-  renderPagination('matches-pagination', matchesPage, Math.ceil(total/matchesPageSize), (p) => loadMatches(p));
+  renderPagination('matches-pagination', matchesPage, totalPages || Math.ceil(total/matchesPageSize), (p) => loadMatches(p));
 }
 
 let editMatchId = null;
@@ -919,9 +974,9 @@ function openMatchModal(id) {
   if (note)  { note.textContent = '填写时间后自动更新'; }
 
   if (id) {
-    API('/admin/matches?page=1&pageSize=200').then(res => {
+    API(`/admin/matches/${id}`).then(res => {
       if (!res.success) return;
-      const m = res.data.matches.find(x => x.id === id);
+      const m = res.data;
       if (!m) return;
       document.getElementById('f-group').value      = m.group_name;
       document.getElementById('f-round').value      = m.round;
@@ -1341,26 +1396,74 @@ let bottlesPage = 1;
 async function loadBottles(page) {
   if (page !== undefined) bottlesPage = page;
   const type = document.getElementById('bottle-type-filter').value;
-  const params = new URLSearchParams({ page: bottlesPage, pageSize: 20 });
+  const params = new URLSearchParams({ page: bottlesPage, pageSize: bottlesPageSize });
   if (type) params.append('type', type);
   const res = await API('/admin/bottles?' + params);
   if (!res.success) return;
-  const { bottles, total } = res.data;
+  const { bottles, total, page: safePage, pageSize, totalPages } = res.data;
+  bottlesPage = safePage || bottlesPage;
+  bottlesPageSize = pageSize || bottlesPageSize;
+  const pageSizeEl = document.getElementById('bottles-page-size');
+  if (pageSizeEl) pageSizeEl.value = String(bottlesPageSize);
   const typeMap = { support:'支持宣言', predict:'比分预测', chat:'闲聊祝福', meet:'遇见有缘' };
   const tbody = document.getElementById('bottles-tbody');
-  if (!bottles.length) { tbody.innerHTML = `<tr><td colspan="7" class="empty">暂无数据</td></tr>`; return; }
+  if (!bottles.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">暂无数据</td></tr>`;
+    renderPagination('bottles-pagination', bottlesPage, totalPages || 1, p => loadBottles(p));
+    return;
+  }
   tbody.innerHTML = bottles.map(b => `
     <tr>
       <td>${b.id}</td>
       <td>${typeMap[b.type]||b.type}</td>
+      <td>@${escHtml(b.author_username || 'ball_fan_1')}</td>
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(b.content)}</td>
       <td>${b.home_team ? b.home_team+'vs'+b.away_team : '-'}</td>
-      <td>${b.pick_count}</td>
+      <td>${b.pick_count} / ${b.reply_count || 0}</td>
       <td>${fmtTime(b.created_at)}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="deleteBottle(${b.id})">删除</button></td>
+      <td>
+        <button class="btn btn-secondary btn-sm" onclick="openBottleDetail(${b.id})">详情</button>
+        <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteBottle(${b.id})">删除</button>
+      </td>
     </tr>
   `).join('');
-  renderPagination('bottles-pagination', bottlesPage, Math.ceil(total/20), p => loadBottles(p));
+  renderPagination('bottles-pagination', bottlesPage, totalPages || Math.ceil(total/bottlesPageSize), p => loadBottles(p));
+}
+
+async function openBottleDetail(id) {
+  const res = await API(`/admin/bottles/${id}`);
+  if (!res.success) return showToast(res.error || '加载失败', 'error');
+  const { bottle, replies } = res.data;
+  const typeMap = { support:'支持宣言', predict:'比分预测', chat:'闲聊祝福', meet:'遇见有缘' };
+  document.getElementById('bottle-detail-body').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+      <div class="stat-card"><div class="label">投放人</div><div style="font-size:16px;font-weight:700;margin-top:6px">@${escHtml(bottle.author_username || 'ball_fan_1')}</div></div>
+      <div class="stat-card"><div class="label">类型</div><div style="font-size:16px;font-weight:700;margin-top:6px">${typeMap[bottle.type] || bottle.type}</div></div>
+      <div class="stat-card"><div class="label">被收次数</div><div class="value purple">${bottle.pick_count || 0}</div></div>
+      <div class="stat-card"><div class="label">投放时间</div><div style="font-size:12px;margin-top:6px;color:var(--muted)">${fmtTime(bottle.created_at)}</div></div>
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:8px">瓶子内容</div>
+      <div style="background:var(--surface2);border-radius:8px;padding:12px;line-height:1.6">${escHtml(bottle.content)}</div>
+      ${bottle.home_team ? `<div style="font-size:12px;color:var(--muted);margin-top:8px">关联比赛：${escHtml(bottle.home_team)} vs ${escHtml(bottle.away_team)}</div>` : ''}
+    </div>
+    <div>
+      <div style="font-weight:600;margin-bottom:8px">回复列表 (${replies.length})</div>
+      ${replies.length ? replies.map(r => `
+        <div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+          <div style="font-size:22px">${escHtml(r.avatar || '⚽')}</div>
+          <div style="flex:1">
+            <div style="display:flex;justify-content:space-between;gap:10px">
+              <span style="font-weight:600">${escHtml(r.nickname || r.username || 'ball_fan_1')} <span style="color:var(--muted);font-weight:400">@${escHtml(r.username || 'ball_fan_1')}</span></span>
+              <span style="color:var(--muted);font-size:12px">${fmtTime(r.created_at)}</span>
+            </div>
+            <div style="margin-top:4px;line-height:1.5">${escHtml(r.content)}</div>
+          </div>
+        </div>
+      `).join('') : '<div class="empty">暂无回复</div>'}
+    </div>
+  `;
+  openModal('modal-bottle-detail');
 }
 
 async function deleteBottle(id) {
@@ -1374,9 +1477,13 @@ async function deleteBottle(id) {
 let usersPage = 1;
 async function loadUsers(page) {
   if (page !== undefined) usersPage = page;
-  const res = await API(`/admin/users?page=${usersPage}&pageSize=20`);
+  const res = await API(`/admin/users?page=${usersPage}&pageSize=${usersPageSize}`);
   if (!res.success) return;
-  const { users, total } = res.data;
+  const { users, total, page: safePage, pageSize, totalPages } = res.data;
+  usersPage = safePage || usersPage;
+  usersPageSize = pageSize || usersPageSize;
+  const pageSizeEl = document.getElementById('users-page-size');
+  if (pageSizeEl) pageSizeEl.value = String(usersPageSize);
 
   // 显示"清理无用户名用户"按钮（超级管理员）
   const delBtn = document.getElementById('btn-del-unregistered');
@@ -1384,15 +1491,13 @@ async function loadUsers(page) {
     delBtn.style.display = 'inline-block';
   }
 
-  // 只展示有用户名的用户
-  const registeredUsers = users.filter(u => u.username && u.username.trim() !== '');
   const tbody = document.getElementById('users-tbody');
-  if (!registeredUsers.length) {
+  if (!users.length) {
     tbody.innerHTML = `<tr><td colspan="8" class="empty">暂无已注册用户</td></tr>`;
-    renderPagination('users-pagination', usersPage, Math.ceil(total/20), p => loadUsers(p));
+    renderPagination('users-pagination', usersPage, totalPages || 1, p => loadUsers(p));
     return;
   }
-  tbody.innerHTML = registeredUsers.map(u => {
+  tbody.innerHTML = users.map(u => {
     const acc = u.total_votes > 0 ? Math.round(u.correct_votes/u.total_votes*100)+'%' : '0%';
     return `
       <tr>
@@ -1404,7 +1509,7 @@ async function loadUsers(page) {
         </td>
         <td>${u.total_votes}</td>
         <td>${acc}</td>
-        <td>${u.total_bottles}</td>
+        <td>${(u.total_bottles || 0) + (u.total_picks || 0)}</td>
         <td>${fmtDate(u.created_at)}</td>
         <td>
           <button class="btn btn-secondary btn-sm" onclick="openUserDetail('${u.id}')">详情</button>
@@ -1413,7 +1518,7 @@ async function loadUsers(page) {
       </tr>
     `;
   }).join('');
-  renderPagination('users-pagination', usersPage, Math.ceil(total/20), p => loadUsers(p));
+  renderPagination('users-pagination', usersPage, totalPages || Math.ceil(total/usersPageSize), p => loadUsers(p));
 }
 
 async function deleteUnregisteredUsers() {
@@ -1421,7 +1526,7 @@ async function deleteUnregisteredUsers() {
   const res = await API('/admin/users/unregistered', { method:'DELETE' });
   if (res.success) {
     showToast(`已清理 ${res.data.deleted} 个无用户名用户`, 'success');
-    loadUsers();
+    loadUsers(1);
   } else {
     showToast(res.error || '清理失败', 'error');
   }
@@ -1541,13 +1646,21 @@ let logsPage = 1;
 async function loadLogs(page) {
   if (page !== undefined) logsPage = page;
   const action = document.getElementById('log-action-filter').value.trim();
-  const params = new URLSearchParams({ page: logsPage, pageSize: 30 });
+  const params = new URLSearchParams({ page: logsPage, pageSize: logsPageSize });
   if (action) params.append('action', action);
   const res = await API('/admin/logs?' + params);
   if (!res.success) return showToast('加载失败', 'error');
-  const { logs, total } = res.data;
+  const { logs, total, page: safePage, pageSize, totalPages } = res.data;
+  logsPage = safePage || logsPage;
+  logsPageSize = pageSize || logsPageSize;
+  const pageSizeEl = document.getElementById('logs-page-size');
+  if (pageSizeEl) pageSizeEl.value = String(logsPageSize);
   const tbody = document.getElementById('logs-tbody');
-  if (!logs.length) { tbody.innerHTML = `<tr><td colspan="6" class="empty">暂无日志</td></tr>`; return; }
+  if (!logs.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">暂无日志</td></tr>`;
+    renderPagination('logs-pagination', logsPage, totalPages || 1, p => loadLogs(p));
+    return;
+  }
   const targetTypeMap = { match:'比赛', user:'用户', bottle:'漂流瓶', admin:'管理员' };
   tbody.innerHTML = logs.map(log => {
     let detailStr = '';
@@ -1563,7 +1676,7 @@ async function loadLogs(page) {
       </tr>
     `;
   }).join('');
-  renderPagination('logs-pagination', logsPage, Math.ceil(total/30), p => loadLogs(p));
+  renderPagination('logs-pagination', logsPage, totalPages || Math.ceil(total/logsPageSize), p => loadLogs(p));
 }
 
 // ==================== 账号管理 ====================

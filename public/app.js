@@ -9,7 +9,13 @@ const state = {
     user: null,
     matches: [],
     pickCount: 5,
-    currentBottleId: null   // 当前回复目标瓶子ID
+    currentBottleId: null,   // 当前回复目标瓶子ID
+    currentBottleTab: 'thrown',
+    accountVersion: 0,
+    isSwitchingAccount: false,
+    pendingActions: new Set(),
+    navigationReady: false,
+    bottleInputReady: false
 };
 
 // 漂流瓶类型
@@ -25,13 +31,15 @@ const bottleTypes = {
 async function apiRequest(endpoint, options = {}) {
     try {
         const headers = { 'Content-Type': 'application/json', ...options.headers };
+        const requestUserId = state.userId;
         if (state.userId) headers['X-User-Id'] = state.userId;
 
         const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
         const data = await response.json();
 
         const newUserId = response.headers.get('X-User-Id');
-        if (newUserId && newUserId !== state.userId) {
+        const canAdoptUserId = state.userId === requestUserId || (!state.userId && !requestUserId);
+        if (newUserId && newUserId !== state.userId && canAdoptUserId) {
             state.userId = newUserId;
             localStorage.setItem('userId', newUserId);
         }
@@ -40,6 +48,66 @@ async function apiRequest(endpoint, options = {}) {
         console.error('API请求失败:', error);
         return { success: false, error: error.message };
     }
+}
+
+function captureAccountVersion() {
+    return state.accountVersion;
+}
+
+function isFreshAccount(version) {
+    return version === state.accountVersion;
+}
+
+function isActionPending(key) {
+    return state.pendingActions.has(key);
+}
+
+function setActionPending(key, pending) {
+    if (pending) state.pendingActions.add(key);
+    else state.pendingActions.delete(key);
+}
+
+function setBottleTabActive(tab) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    const tabEl = document.getElementById(`tab-${tab}`);
+    if (tabEl) tabEl.classList.add('active');
+}
+
+function resetAccountScopedUI(preferredBottleTab = 'thrown') {
+    state.currentMatch = null;
+    state.currentBottleId = null;
+    state.matches = [];
+    state.pickCount = 5;
+    state.currentBottleTab = preferredBottleTab;
+    updateElement('sidebar-votes', 0);
+    updateElement('sidebar-bottles', 0);
+    updateElement('pick-count', 5);
+    updateElement('my-votes', 0);
+    updateElement('my-correct', 0);
+    updateElement('my-accuracy', '0%');
+    updateElement('my-bottles-count', 0);
+    updateElement('my-bottle-list', '');
+    const matchList = document.getElementById('match-list');
+    if (matchList) matchList.innerHTML = '<p class="empty-tip">加载中...</p>';
+    const bottleList = document.getElementById('my-bottle-list');
+    if (bottleList) bottleList.innerHTML = '<p class="empty-tip">加载中...</p>';
+    setBottleTabActive(preferredBottleTab);
+}
+
+async function refreshAccountData(targetPage = state.currentPage, matchId = state.currentMatch?.id) {
+    const version = captureAccountVersion();
+    await Promise.all([
+        loadGlobalStats(version),
+        loadMatches(version),
+        loadPickCount(version),
+        loadOceanBottleCount(version)
+    ]);
+    if (!isFreshAccount(version)) return;
+    loadProfileHeader();
+    updateSidebarUser();
+    if (targetPage === 'profile') await loadProfilePage(version);
+    if (targetPage === 'bottle') await loadMyBottles(state.currentBottleTab || 'thrown', version);
+    if (targetPage === 'match-detail' && matchId) await showMatchDetail(matchId);
 }
 
 // ==================== 初始化 ====================
@@ -65,12 +133,14 @@ async function checkAuthStatus() {
 }
 
 async function initApp() {
+    const version = captureAccountVersion();
     await Promise.all([
-        loadGlobalStats(),
-        loadMatches(),
-        loadPickCount(),
-        loadOceanBottleCount()
+        loadGlobalStats(version),
+        loadMatches(version),
+        loadPickCount(version),
+        loadOceanBottleCount(version)
     ]);
+    if (!isFreshAccount(version)) return;
     loadProfileHeader();
     initNavigation();
     initBottleInput();
@@ -84,8 +154,9 @@ function updateDate() {
     if (el) el.textContent = today.toLocaleDateString('zh-CN', options);
 }
 
-async function loadGlobalStats() {
+async function loadGlobalStats(version = captureAccountVersion()) {
     const result = await apiRequest('/stats/global');
+    if (!isFreshAccount(version)) return;
     if (result.success) {
         const d = result.data;
         updateElement('sidebar-matches', d.weekMatches);
@@ -94,8 +165,9 @@ async function loadGlobalStats() {
     }
 }
 
-async function loadMatches() {
+async function loadMatches(version = captureAccountVersion()) {
     const result = await apiRequest('/matches');
+    if (!isFreshAccount(version)) return;
     if (result.success) {
         state.matches = result.data;
         renderMatches();
@@ -109,16 +181,18 @@ async function loadMatches() {
     }
 }
 
-async function loadPickCount() {
+async function loadPickCount(version = captureAccountVersion()) {
     const result = await apiRequest('/bottles/picks/remaining');
+    if (!isFreshAccount(version)) return;
     if (result.success) {
         state.pickCount = result.data.remaining;
         updateElement('pick-count', state.pickCount);
     }
 }
 
-async function loadOceanBottleCount() {
+async function loadOceanBottleCount(version = captureAccountVersion()) {
     const result = await apiRequest('/bottles/count');
+    if (!isFreshAccount(version)) return;
     if (result.success) {
         updateElement('ocean-bottle-count', result.data.count);
     }
@@ -273,10 +347,15 @@ async function doRegister() {
     btn.disabled = false; btn.textContent = '开始参与';
 
     if (result.success) {
+        const previousPage = state.currentPage;
+        const previousMatchId = state.currentMatch?.id;
+        const previousBottleTab = state.currentBottleTab || 'thrown';
         state.user = result.data;
         hideAuthOverlay();
         showToast(`欢迎加入，${result.data.nickname || username}！`);
-        await initApp();
+        state.accountVersion += 1;
+        resetAccountScopedUI(previousBottleTab);
+        await refreshAccountData(previousPage, previousMatchId);
     } else {
         showToast(result.error || '设置失败，请重试');
     }
@@ -297,12 +376,19 @@ async function doLogin() {
     btn.disabled = false; btn.textContent = '登录';
 
     if (result.success) {
+        const previousPage = state.currentPage;
+        const previousMatchId = state.currentMatch?.id;
+        const previousBottleTab = state.currentBottleTab || 'thrown';
+        state.isSwitchingAccount = true;
         state.userId = result.data.id;
         localStorage.setItem('userId', result.data.id);
         state.user = result.data;
+        state.accountVersion += 1;
+        resetAccountScopedUI(previousBottleTab);
         hideAuthOverlay();
         showToast(`欢迎回来，${result.data.nickname}！`);
-        await initApp();
+        await refreshAccountData(previousPage, previousMatchId);
+        state.isSwitchingAccount = false;
     } else {
         showToast(result.error || '登录失败');
     }
@@ -575,13 +661,16 @@ function updateVoteStats(match) {
 }
 
 async function vote(choice) {
+    if (isActionPending('vote')) return;
     if (!state.currentMatch) { showToast('请先选择比赛'); return; }
     if (getDisplayStatus(state.currentMatch) === 'ended') { showToast('比赛已结束，无法投票'); return; }
 
+    setActionPending('vote', true);
     const result = await apiRequest('/votes', {
         method: 'POST',
         body: JSON.stringify({ matchId: state.currentMatch.id, choice })
     });
+    setActionPending('vote', false);
 
     if (result.success) {
         state.currentMatch.userVote = choice;
@@ -605,7 +694,9 @@ async function vote(choice) {
         const revoteBtn = document.getElementById('revote-btn');
         if (revoteBtn) revoteBtn.style.display = 'inline-flex';
         updateVoteStats(state.currentMatch);
-        loadGlobalStats();
+        const version = captureAccountVersion();
+        loadGlobalStats(version);
+        loadMatches(version);
         showToast('投票成功！');
     } else {
         showToast(result.error || '投票失败');
@@ -613,10 +704,13 @@ async function vote(choice) {
 }
 
 async function revokeVote() {
+    if (isActionPending('vote')) return;
     if (!state.currentMatch) return;
     if (!confirm('确定要撤销本次投票并重新选择吗？')) return;
 
+    setActionPending('vote', true);
     const result = await apiRequest(`/votes/${state.currentMatch.id}`, { method: 'DELETE' });
+    setActionPending('vote', false);
     if (result.success) {
         state.currentMatch.userVote = null;
         state.currentMatch.home_votes = result.data.home_votes;
@@ -636,17 +730,20 @@ async function revokeVote() {
 
         document.getElementById('voting-section').style.display = 'block';
         document.getElementById('vote-result-section').style.display = 'none';
-        loadGlobalStats();
+        const version = captureAccountVersion();
+        loadGlobalStats(version);
+        loadMatches(version);
         showToast('已撤销投票，可重新选择');
     } else {
         showToast(result.error || '撤销失败');
     }
 }
 
-async function loadMatchBottles(matchId) {
+async function loadMatchBottles(matchId, version = captureAccountVersion()) {
     const container = document.getElementById('match-bottles');
     if (!container) return;
     const result = await apiRequest(`/bottles/match/${matchId}`);
+    if (!isFreshAccount(version)) return;
     if (result.success && result.data && result.data.length > 0) {
         container.innerHTML = result.data.map(bottle => `
             <div class="bottle-item" onclick="openBottleReplies(${bottle.id})">
@@ -677,17 +774,23 @@ function showPage(pageName) {
         if (item.dataset.page === pageName) item.classList.add('active');
     });
 
-    if (pageName === 'profile') loadProfilePage();
+    const version = captureAccountVersion();
+    if (pageName === 'profile') loadProfilePage(version);
     else if (pageName === 'bottle') {
-        loadMyBottles('thrown');
-        loadOceanBottleCount();
+        const activeTab = state.currentBottleTab || 'thrown';
+        loadMyBottles(activeTab, version);
+        loadOceanBottleCount(version);
+        loadPickCount(version);
     } else if (pageName === 'home') {
         // 返回首页时重新渲染卡片，确保投票状态实时更新
         renderMatches();
+        loadMatches(version);
     }
 }
 
 function initNavigation() {
+    if (state.navigationReady) return;
+    state.navigationReady = true;
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', () => {
             const page = item.dataset.page;
@@ -726,6 +829,8 @@ function initBottleSelect() {
 }
 
 function initBottleInput() {
+    if (state.bottleInputReady) return;
+    state.bottleInputReady = true;
     const textarea = document.getElementById('bottle-content');
     if (textarea) {
         textarea.addEventListener('input', (e) => updateElement('char-count', e.target.value.length));
@@ -733,6 +838,7 @@ function initBottleInput() {
 }
 
 async function throwBottle() {
+    if (isActionPending('throwBottle')) return;
     const textarea = document.getElementById('bottle-content');
     const content = textarea ? textarea.value.trim() : '';
     if (!content) { showToast('请输入内容'); return; }
@@ -743,26 +849,37 @@ async function throwBottle() {
     const matchSelect = document.getElementById('bottle-match');
     const matchId = matchSelect ? matchSelect.value : null;
 
+    setActionPending('throwBottle', true);
     const result = await apiRequest('/bottles', {
         method: 'POST',
         body: JSON.stringify({ type, content, matchId: matchId ? parseInt(matchId) : null })
     });
+    setActionPending('throwBottle', false);
 
     if (result.success) {
         closeModal('throw-modal');
         showToast('瓶子已投入海洋！');
-        loadGlobalStats();
-        loadOceanBottleCount();
-        loadMyBottles('thrown');
+        state.currentBottleTab = 'thrown';
+        setBottleTabActive('thrown');
+        const version = captureAccountVersion();
+        loadGlobalStats(version);
+        loadOceanBottleCount(version);
+        loadMyBottles('thrown', version);
+        if (state.currentMatch?.id && matchId && parseInt(matchId) === state.currentMatch.id) {
+            loadMatchBottles(state.currentMatch.id, version);
+        }
     } else {
         showToast(result.error || '投瓶失败');
     }
 }
 
 async function pickBottle() {
+    if (isActionPending('pickBottle')) return;
     if (state.pickCount <= 0) { showToast('今日收瓶次数已用完'); return; }
 
+    setActionPending('pickBottle', true);
     const result = await apiRequest('/bottles/pick', { method: 'POST' });
+    setActionPending('pickBottle', false);
     if (result.success) {
         const bottle = result.data;
         state.currentBottleId = bottle.id;
@@ -775,42 +892,56 @@ async function pickBottle() {
         const replyTA = document.getElementById('reply-content');
         if (replyTA) replyTA.value = '';
         document.getElementById('pick-modal').classList.add('show');
-        loadGlobalStats();
+        const version = captureAccountVersion();
+        state.currentBottleTab = 'collected';
+        setBottleTabActive('collected');
+        loadGlobalStats(version);
+        loadMyBottles('collected', version);
     } else {
         showToast(result.error || '收瓶失败');
     }
 }
 
 async function submitReply() {
+    if (isActionPending('pickReply')) return;
     if (!state.currentBottleId) { showToast('无效的漂流瓶'); return; }
     const ta = document.getElementById('reply-content');
     const content = ta ? ta.value.trim() : '';
     if (!content || content.length < 2) { showToast('回复至少2个字'); return; }
 
+    setActionPending('pickReply', true);
     const result = await apiRequest(`/bottles/${state.currentBottleId}/replies`, {
         method: 'POST',
         body: JSON.stringify({ content })
     });
+    setActionPending('pickReply', false);
     if (result.success) {
         showToast('回复已发送！');
         if (ta) ta.value = '';
         closeModal('pick-modal');
+        const version = captureAccountVersion();
+        loadMyBottles(state.currentBottleTab || 'collected', version);
+        if (state.currentPage === 'profile') loadProfilePage(version);
     } else {
         showToast(result.error || '回复失败');
     }
 }
 
 function switchBottleTab(tab, btn) {
+    state.currentBottleTab = tab;
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     if (btn) btn.classList.add('active');
-    loadMyBottles(tab);
+    loadMyBottles(tab, captureAccountVersion());
 }
 
-async function loadMyBottles(tab) {
+async function loadMyBottles(tab, version = captureAccountVersion()) {
     const container = document.getElementById('my-bottle-list');
     if (!container) return;
+    state.currentBottleTab = tab;
+    container.innerHTML = '<p class="empty-tip">加载中...</p>';
     const endpoint = tab === 'thrown' ? '/bottles/my/thrown' : '/bottles/my/collected';
     const result = await apiRequest(endpoint);
+    if (!isFreshAccount(version) || state.currentBottleTab !== tab) return;
     if (result.success && result.data && result.data.length > 0) {
         container.innerHTML = result.data.map(bottle => `
             <div class="bottle-item" onclick="openBottleReplies(${bottle.id})">
@@ -871,7 +1002,7 @@ async function openBottleReplies(bottleId) {
                 <div class="reply-item">
                     <span class="reply-avatar">${r.avatar || '⚽'}</span>
                     <div class="reply-content-wrap">
-                        <span class="reply-nickname">${escapeHtml(r.nickname || '匿名球迷')}</span>
+                        <span class="reply-nickname">${escapeHtml(r.nickname || r.username || '匿名球迷')}</span>
                         <p class="reply-text">${escapeHtml(r.content)}</p>
                         <span class="reply-time">${formatTime(r.created_at)}</span>
                     </div>
@@ -886,20 +1017,27 @@ async function openBottleReplies(bottleId) {
 }
 
 async function submitNewReply() {
+    if (isActionPending('newReply')) return;
     if (!state.currentBottleId) return;
     const ta = document.getElementById('new-reply-content');
     const content = ta ? ta.value.trim() : '';
     if (!content || content.length < 2) { showToast('回复至少2个字'); return; }
 
+    setActionPending('newReply', true);
     const result = await apiRequest(`/bottles/${state.currentBottleId}/replies`, {
         method: 'POST',
         body: JSON.stringify({ content })
     });
+    setActionPending('newReply', false);
     if (result.success) {
         showToast('回复已发送！');
         if (ta) ta.value = '';
         // 刷新回复列表
         await openBottleReplies(state.currentBottleId);
+        const version = captureAccountVersion();
+        loadMyBottles(state.currentBottleTab || 'thrown', version);
+        if (state.currentMatch?.id) loadMatchBottles(state.currentMatch.id, version);
+        if (state.currentPage === 'profile') loadProfilePage(version);
     } else {
         showToast(result.error || '回复失败');
     }
@@ -911,10 +1049,13 @@ function loadProfileHeader() {
     if (!state.user) return;
     const el = document.getElementById('profile-avatar');
     if (el) el.textContent = state.user.avatar || '⚽';
+    updateElement('profile-nickname', state.user.nickname || state.user.username || '足球爱好者');
+    if (state.user.username) updateElement('profile-username-tag', `@${state.user.username}`);
 }
 
-async function loadProfilePage() {
+async function loadProfilePage(version = captureAccountVersion()) {
     const result = await apiRequest('/user/profile');
+    if (!isFreshAccount(version)) return;
     if (result.success) {
         state.user = result.data;
         updateElement('profile-avatar', result.data.avatar || '⚽');
@@ -925,13 +1066,42 @@ async function loadProfilePage() {
     }
 
     const statsResult = await apiRequest('/user/stats');
+    if (!isFreshAccount(version)) return;
     if (statsResult.success) {
         const d = statsResult.data;
         updateElement('my-votes', d.total_votes || 0);
         updateElement('my-correct', d.correct_votes || 0);
         updateElement('my-accuracy', d.accuracy || '0%');
         updateElement('my-bottles-count', d.total_bottle_all || 0);
+        renderAchievements(d.achievements || {});
     }
+}
+
+function renderAchievements(achievements = {}) {
+    const container = document.getElementById('achievements-grid');
+    if (!container) return;
+    const items = [
+        { key: 'predictNovice', icon: '🔮', name: '预言新手', desc: '完成5次预测' },
+        { key: 'prophecyMaster', icon: '👁️', name: '神预言', desc: '预测3场正确' },
+        { key: 'bottleDrifter', icon: '🍶', name: '漂流达人', desc: '投出5个瓶子' },
+        { key: 'fatedFriend', icon: '🤝', name: '有缘人', desc: '收到5个回复' },
+        { key: 'fullAttendance', icon: '🏅', name: '全勤奖', desc: '参与全部场次' }
+    ];
+    container.innerHTML = items.map(item => {
+        const data = achievements[item.key] || {};
+        const progress = Number(data.progress || 0);
+        const target = Number(data.target || 0);
+        const unlocked = Boolean(data.unlocked);
+        const progressText = target > 0 ? `${Math.min(progress, target)}/${target}` : `${progress}`;
+        return `
+            <div class="achievement ${unlocked ? 'unlocked' : 'locked'}">
+                <span class="achievement-icon">${item.icon}</span>
+                <span class="achievement-name">${item.name}</span>
+                <span class="achievement-desc">${item.desc}</span>
+                <span class="achievement-progress">${unlocked ? '已点亮' : progressText}</span>
+            </div>
+        `;
+    }).join('');
 }
 
 function getLevelName(level) {
