@@ -280,6 +280,10 @@ async function getComputedUserStats(userId) {
 
 // ==================== 赛事状态自动更新 ====================
 // 根据 match_time / end_time 与当前时间对比自动更新 status
+const MATCH_STATUS_UPDATE_TTL_MS = 30 * 1000;
+let lastMatchStatusUpdateAt = 0;
+let pendingMatchStatusUpdate = null;
+
 async function autoUpdateMatchStatus() {
   if (hasPostgres) {
     await db.prepare(`
@@ -312,6 +316,23 @@ async function autoUpdateMatchStatus() {
     UPDATE matches SET status = 'upcoming'
     WHERE match_time > ?
   `).run(now);
+}
+
+async function ensureFreshMatchStatus(options = {}) {
+  const now = Date.now();
+  if (!options.force && now - lastMatchStatusUpdateAt < MATCH_STATUS_UPDATE_TTL_MS) {
+    return;
+  }
+  if (!pendingMatchStatusUpdate) {
+    pendingMatchStatusUpdate = autoUpdateMatchStatus()
+      .then(() => {
+        lastMatchStatusUpdateAt = Date.now();
+      })
+      .finally(() => {
+        pendingMatchStatusUpdate = null;
+      });
+  }
+  await pendingMatchStatusUpdate;
 }
 
 // ==================== 中间件 ====================
@@ -360,7 +381,7 @@ app.use(async (req, res, next) => {
 
     const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     if (!user) {
-      await db.prepare('INSERT INTO users (id) VALUES (?)').run(userId);
+      await db.prepare('INSERT OR IGNORE INTO users (id) VALUES (?)').run(userId);
     }
 
     res.setHeader('X-User-Id', userId);
@@ -374,7 +395,7 @@ app.use(async (req, res, next) => {
 
 app.get('/api/matches', async (req, res) => {
   try {
-    await autoUpdateMatchStatus();
+    await ensureFreshMatchStatus();
     const userId = req.userId;
     const matches = await db.prepare(`
       SELECT m.*,
@@ -402,7 +423,7 @@ app.get('/api/matches', async (req, res) => {
 // 本周比赛场次
 app.get('/api/matches/week-count', async (req, res) => {
   try {
-    await autoUpdateMatchStatus();
+    await ensureFreshMatchStatus();
     const week = normalizeMatchRange(getAppWeekRange());
     const count = await getSingleValue(`
       SELECT COUNT(*) as c FROM matches
@@ -416,7 +437,7 @@ app.get('/api/matches/week-count', async (req, res) => {
 
 app.get('/api/matches/today', async (req, res) => {
   try {
-    await autoUpdateMatchStatus();
+    await ensureFreshMatchStatus();
     const today = normalizeMatchRange(getAppDayRange());
     const matches = await db.prepare(`
       SELECT m.*,
@@ -437,7 +458,7 @@ app.get('/api/matches/today', async (req, res) => {
 
 app.get('/api/matches/:id', async (req, res) => {
   try {
-    await autoUpdateMatchStatus();
+    await ensureFreshMatchStatus();
     const match = await db.prepare(`
       SELECT m.*,
         COALESCE(vs.home_votes, 0) as home_votes,
@@ -858,7 +879,7 @@ app.get('/api/user/stats', async (req, res) => {
 
 app.get('/api/stats/global', async (req, res) => {
   try {
-    await autoUpdateMatchStatus();
+    await ensureFreshMatchStatus();
     if (req.userId) await recomputeCorrectVotes(req.userId);
     const week = normalizeMatchRange(getAppWeekRange());
     const weekCount = await getSingleValue(`

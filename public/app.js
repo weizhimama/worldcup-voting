@@ -15,7 +15,10 @@ const state = {
     isSwitchingAccount: false,
     pendingActions: new Set(),
     navigationReady: false,
-    bottleInputReady: false
+    bottleInputReady: false,
+    matchesLoading: false,
+    matchesLoaded: false,
+    matchesLoadError: null
 };
 
 // 漂流瓶类型
@@ -26,16 +29,39 @@ const bottleTypes = {
     meet:    { icon: '🍀', name: '遇见有缘' }
 };
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
+const FAST_REQUEST_TIMEOUT_MS = 7000;
+
 // ==================== API请求封装 ====================
 
 async function apiRequest(endpoint, options = {}) {
+    const { timeout = DEFAULT_REQUEST_TIMEOUT_MS, ...fetchOptions } = options;
+    const controller = (timeout > 0 && typeof AbortController !== 'undefined') ? new AbortController() : null;
+    let timeoutId = null;
+
     try {
-        const headers = { 'Content-Type': 'application/json', ...options.headers };
+        const headers = { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) };
         const requestUserId = state.userId;
         if (state.userId) headers['X-User-Id'] = state.userId;
 
-        const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
-        const data = await response.json();
+        if (controller) {
+            timeoutId = setTimeout(() => controller.abort(), timeout);
+        }
+
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+            ...fetchOptions,
+            headers,
+            signal: controller ? controller.signal : fetchOptions.signal
+        });
+        const contentType = response.headers.get('content-type') || '';
+        const data = contentType.includes('application/json')
+            ? await response.json()
+            : { success: response.ok, data: await response.text() };
+
+        if (!response.ok && data.success !== false) {
+            data.success = false;
+            data.error = data.error || `请求失败 (${response.status})`;
+        }
 
         const newUserId = response.headers.get('X-User-Id');
         const canAdoptUserId = state.userId === requestUserId || (!state.userId && !requestUserId);
@@ -46,8 +72,28 @@ async function apiRequest(endpoint, options = {}) {
         return data;
     } catch (error) {
         console.error('API请求失败:', error);
-        return { success: false, error: error.message };
+        return {
+            success: false,
+            error: error.name === 'AbortError' ? '请求超时，请稍后重试' : error.message,
+            code: error.name === 'AbortError' ? 'TIMEOUT' : 'REQUEST_FAILED'
+        };
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
     }
+}
+
+function createLocalUserId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+    }
+    return 'client-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+function ensureUserId() {
+    if (state.userId) return state.userId;
+    state.userId = createLocalUserId();
+    localStorage.setItem('userId', state.userId);
+    return state.userId;
 }
 
 function captureAccountVersion() {
@@ -77,6 +123,9 @@ function resetAccountScopedUI(preferredBottleTab = 'thrown') {
     state.currentMatch = null;
     state.currentBottleId = null;
     state.matches = [];
+    state.matchesLoading = false;
+    state.matchesLoaded = false;
+    state.matchesLoadError = null;
     state.pickCount = 5;
     state.currentBottleTab = preferredBottleTab;
     updateElement('sidebar-votes', 0);
@@ -87,8 +136,7 @@ function resetAccountScopedUI(preferredBottleTab = 'thrown') {
     updateElement('my-accuracy', '0%');
     updateElement('my-bottles-count', 0);
     updateElement('my-bottle-list', '');
-    const matchList = document.getElementById('match-list');
-    if (matchList) matchList.innerHTML = '<p class="empty-tip">加载中...</p>';
+    showMatchesLoading(true);
     const bottleList = document.getElementById('my-bottle-list');
     if (bottleList) bottleList.innerHTML = '<p class="empty-tip">加载中...</p>';
     setBottleTabActive(preferredBottleTab);
@@ -96,9 +144,10 @@ function resetAccountScopedUI(preferredBottleTab = 'thrown') {
 
 async function refreshAccountData(targetPage = state.currentPage, matchId = state.currentMatch?.id) {
     const version = captureAccountVersion();
-    await Promise.all([
+    showMatchesLoading(true);
+    await Promise.allSettled([
+        loadMatches(version, { showLoading: true }),
         loadGlobalStats(version),
-        loadMatches(version),
         loadPickCount(version),
         loadOceanBottleCount(version)
     ]);
@@ -112,38 +161,44 @@ async function refreshAccountData(targetPage = state.currentPage, matchId = stat
 
 // ==================== 初始化 ====================
 
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
     updateDate();
-    if (!state.userId) await loadGlobalStats();
-    await checkAuthStatus();
+    initApp();
 });
 
-async function checkAuthStatus() {
-    const result = await apiRequest('/user/profile');
+async function checkAuthStatus(version = captureAccountVersion()) {
+    const result = await apiRequest('/user/profile', { timeout: FAST_REQUEST_TIMEOUT_MS });
+    if (!isFreshAccount(version)) return;
     if (result.success) {
         state.user = result.data;
+        loadProfileHeader();
+        updateSidebarUser();
         if (!result.data.is_setup) {
-            // 先加载页面数据，再弹出注册引导（防止注册框关闭后页面空白）
-            await initApp();
+            // 首页数据先跑起来，注册引导稍后出现，避免首屏空白。
             showAuthOverlay('register');
             return;
         }
+    } else {
+        console.warn('账号状态加载失败:', result.error);
     }
-    await initApp();
 }
 
 async function initApp() {
+    ensureUserId();
     const version = captureAccountVersion();
-    await Promise.all([
+    initNavigation();
+    initBottleInput();
+    showMatchesLoading(true);
+
+    await Promise.allSettled([
+        loadMatches(version, { showLoading: true }),
         loadGlobalStats(version),
-        loadMatches(version),
         loadPickCount(version),
-        loadOceanBottleCount(version)
+        loadOceanBottleCount(version),
+        checkAuthStatus(version)
     ]);
     if (!isFreshAccount(version)) return;
     loadProfileHeader();
-    initNavigation();
-    initBottleInput();
     updateSidebarUser();
 }
 
@@ -155,7 +210,7 @@ function updateDate() {
 }
 
 async function loadGlobalStats(version = captureAccountVersion()) {
-    const result = await apiRequest('/stats/global');
+    const result = await apiRequest('/stats/global', { timeout: FAST_REQUEST_TIMEOUT_MS });
     if (!isFreshAccount(version)) return;
     if (result.success) {
         const d = result.data;
@@ -165,24 +220,67 @@ async function loadGlobalStats(version = captureAccountVersion()) {
     }
 }
 
-async function loadMatches(version = captureAccountVersion()) {
-    const result = await apiRequest('/matches');
+function getMatchesLoadingHtml() {
+    return Array.from({ length: 4 }).map(() => `
+        <div class="match-card match-skeleton" aria-hidden="true">
+            <div class="skeleton-row">
+                <span class="skeleton-line short"></span>
+                <span class="skeleton-pill"></span>
+            </div>
+            <span class="skeleton-line tag"></span>
+            <div class="skeleton-teams">
+                <span class="skeleton-flag"></span>
+                <span class="skeleton-vs"></span>
+                <span class="skeleton-flag"></span>
+            </div>
+            <span class="skeleton-line wide"></span>
+        </div>
+    `).join('');
+}
+
+function showMatchesLoading(force = false) {
+    const container = document.getElementById('match-list');
+    if (!container) return;
+    if (!force && state.matches && state.matches.length > 0) return;
+    container.innerHTML = getMatchesLoadingHtml();
+}
+
+function showMatchLoadError(message) {
+    const container = document.getElementById('match-list');
+    if (!container) return;
+    container.innerHTML = `
+        <div class="match-load-message">
+            <div class="load-title">赛事加载失败</div>
+            <div class="load-desc">${escapeHtml(message || '请稍后刷新重试')}</div>
+            <button class="retry-btn" onclick="loadMatches(captureAccountVersion(), { showLoading: true })">重新加载</button>
+        </div>
+    `;
+}
+
+async function loadMatches(version = captureAccountVersion(), options = {}) {
+    const shouldShowLoading = options.showLoading || !state.matches || state.matches.length === 0;
+    state.matchesLoading = true;
+    state.matchesLoadError = null;
+    if (shouldShowLoading) showMatchesLoading(true);
+
+    const result = await apiRequest('/matches', { timeout: DEFAULT_REQUEST_TIMEOUT_MS });
     if (!isFreshAccount(version)) return;
+    state.matchesLoading = false;
+    state.matchesLoaded = true;
     if (result.success) {
         state.matches = result.data;
+        state.matchesLoadError = null;
         renderMatches();
         initBottleSelect();
     } else {
-        const container = document.getElementById('match-list');
-        if (container) {
-            container.innerHTML = `<p class="empty-tip">比赛加载失败，请稍后刷新</p>`;
-        }
+        state.matchesLoadError = result.error || '比赛加载失败，请稍后刷新';
+        showMatchLoadError(state.matchesLoadError);
         console.error('比赛加载失败:', result.error);
     }
 }
 
 async function loadPickCount(version = captureAccountVersion()) {
-    const result = await apiRequest('/bottles/picks/remaining');
+    const result = await apiRequest('/bottles/picks/remaining', { timeout: FAST_REQUEST_TIMEOUT_MS });
     if (!isFreshAccount(version)) return;
     if (result.success) {
         state.pickCount = result.data.remaining;
@@ -191,7 +289,7 @@ async function loadPickCount(version = captureAccountVersion()) {
 }
 
 async function loadOceanBottleCount(version = captureAccountVersion()) {
-    const result = await apiRequest('/bottles/count');
+    const result = await apiRequest('/bottles/count', { timeout: FAST_REQUEST_TIMEOUT_MS });
     if (!isFreshAccount(version)) return;
     if (result.success) {
         updateElement('ocean-bottle-count', result.data.count);
@@ -413,6 +511,16 @@ function updateSidebarUser() {
 function renderMatches() {
     const container = document.getElementById('match-list');
     if (!container) return;
+
+    if (state.matchesLoadError) {
+        showMatchLoadError(state.matchesLoadError);
+        return;
+    }
+
+    if (state.matchesLoading || !state.matchesLoaded) {
+        showMatchesLoading(true);
+        return;
+    }
 
     if (!state.matches || state.matches.length === 0) {
         container.innerHTML = '<p class="empty-tip">暂无比赛数据</p>';
